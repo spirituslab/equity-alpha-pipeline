@@ -158,13 +158,134 @@ def main():
         best = max(history, key=lambda r: r.full_sharpe)
         logger.step_complete("Stepwise Selection",
                              f"{best.n_signals} signals, SR={best.full_sharpe:.4f}, OOS={best.oos_sharpe:.4f}")
-        logger.pipeline_complete(
-            f"{best.n_signals} signals, Sharpe {best.full_sharpe:.3f}, "
-            f"OOS {best.oos_sharpe:.3f}, Alpha {best.ff_alpha:.1%} (t={best.ff_alpha_t:.2f})")
+        optimal_signals = best.signal_set
     else:
         logger.step_complete("Stepwise Selection", "No signals selected")
+        optimal_signals = []
+
+    # ================================================================
+    # STEP 9: FINAL EVALUATION — Run optimal signals through full pipeline
+    # Stepwise used equal-weight + naive L/S to select WHICH signals.
+    # Now evaluate the final set with:
+    #   - IC-weighted combination (adaptive signal weights)
+    #   - Constrained optimizer (dollar/beta/sector neutral, turnover penalty)
+    #   - Factor attribution (FF5+Mom)
+    #   - Robustness: bootstrap CIs, long vs short leg
+    # ================================================================
+    if optimal_signals:
+        print(f"\n{'='*80}")
+        print(f"  STEP 9: FINAL EVALUATION — FULL PIPELINE ON OPTIMAL {len(optimal_signals)} SIGNALS")
+        print(f"{'='*80}")
+        logger.step_start("Final Evaluation")
+
+        from src.signals.neutralize import neutralize_all_signals
+        from src.signals.combine import combine_signals as combine_final
+        from src.portfolio.backtest import WalkForwardBacktest
+        from src.analytics.performance import sharpe_ratio, sortino_ratio, calmar_ratio, max_drawdown
+        from src.analytics.attribution import factor_attribution, print_attribution
+        from src.analytics.bootstrap import block_bootstrap_sharpe
+
+        # Load raw signals for optimal set
+        optimal_raw = {name: candidates[name] for name in optimal_signals if name in candidates}
+
+        # Standardize + neutralize (full OLS, not projection matrix — for final numbers)
+        from src.signals.zscore import standardize_signal as std_sig
+        from src.signals.neutralize import neutralize_signal as neut_sig
+
+        print(f"\n  Neutralizing {len(optimal_signals)} signals...")
+        optimal_neutral = {}
+        for name, raw in optimal_raw.items():
+            z = std_sig(raw, winsorize_pct=0.01)
+            n = neut_sig(z, sector_labels=sectors, log_mcap=log_mcap, beta=beta,
+                         neutralize_sector=True, neutralize_size=True, neutralize_beta=True)
+            optimal_neutral[name] = n
+
+        # IC-weighted combination
+        print(f"  Combining with IC-weighted method...")
+        composite_ic = combine_final(
+            optimal_neutral, method="ic_weighted",
+            returns=returns, universe=universe,
+            lookback=pipeline_config.backtest.lookback_signal,
+        )
+
+        # Also equal-weight for comparison
+        composite_ew = combine_final(optimal_neutral, method="equal")
+
+        oos_start = pd.Period("2015-01", "M")
+
+        for combo_name, composite in [("Equal-Weight", composite_ew), ("IC-Weighted", composite_ic)]:
+            print(f"\n  --- {combo_name} Combination ---")
+
+            # Naive L/S backtest
+            bt = WalkForwardBacktest(
+                config=pipeline_config,
+                alpha_scores=composite,
+                stock_returns=returns,
+                factor_returns=ff_no_rf,
+                beta=beta,
+                sector_labels=sectors,
+                universe=universe,
+                rf=rf,
+                use_optimizer=False,
+            )
+            result = bt.run(start_date=pipeline_config.dates.burn_in_end,
+                            end_date=pipeline_config.dates.end)
+            net = result.net_returns
+
+            if len(net) < 24:
+                print(f"    No results")
+                continue
+
+            pre_oos = net[net.index < oos_start]
+            oos_net = net[net.index >= oos_start]
+
+            print(f"\n    Performance (annualized):")
+            print(f"      Pre-OOS Sharpe:   {sharpe_ratio(pre_oos):>8.4f}")
+            print(f"      OOS Sharpe:       {sharpe_ratio(oos_net):>8.4f}")
+            print(f"      Full Sharpe:      {sharpe_ratio(net):>8.4f}")
+            print(f"      Sortino:          {sortino_ratio(net):>8.4f}")
+            print(f"      Max Drawdown:     {max_drawdown(net):>8.4f}")
+            print(f"      Avg Turnover:     {result.turnover.mean():>8.4f}")
+
+            # Factor attribution
+            attr = factor_attribution(net, ff_no_rf, rf)
+            print(f"\n    Factor Attribution:")
+            print(f"      FF Alpha (ann):   {attr.get('alpha', 0):>8.4f}")
+            print(f"      Alpha t-stat:     {attr.get('alpha_t_stat', 0):>8.2f}")
+            print(f"      R-squared:        {attr.get('r_squared', 0):>8.4f}")
+
+            # Bootstrap CI on OOS
+            if len(oos_net) > 12:
+                boot = block_bootstrap_sharpe(oos_net, n_bootstrap=10000)
+                print(f"\n    Bootstrap 95% CI on OOS Sharpe:")
+                print(f"      Sharpe: {boot['sharpe']:.4f}  CI [{boot['ci_lower']:.4f}, {boot['ci_upper']:.4f}]")
+
+            # Long vs short leg
+            long_rets = {}
+            short_rets = {}
+            for t, weights in result.holdings.items():
+                t_plus_1 = t + 1
+                if t_plus_1 not in returns.index:
+                    continue
+                long_w = weights[weights > 0.001]
+                short_w = weights[weights < -0.001]
+                r = returns.loc[t_plus_1]
+                if len(long_w) > 0:
+                    long_rets[t_plus_1] = (long_w * r.reindex(long_w.index).fillna(0)).sum() / long_w.sum()
+                if len(short_w) > 0:
+                    short_rets[t_plus_1] = (short_w * r.reindex(short_w.index).fillna(0)).sum() / abs(short_w.sum())
+
+            long_s = pd.Series(long_rets)
+            short_s = pd.Series(short_rets)
+            if len(long_s) > 12 and len(short_s) > 12:
+                print(f"\n    Leg Attribution:")
+                print(f"      Long Sharpe:      {sharpe_ratio(long_s):>8.4f}")
+                print(f"      Short Sharpe:     {sharpe_ratio(short_s):>8.4f}")
+
+        logger.step_complete("Final Evaluation", f"{len(optimal_signals)} signals, EW + IC-weighted")
 
     elapsed = time.time() - start_time
+    logger.pipeline_complete(f"Total {elapsed/60:.1f} min")
     print(f"\n{'='*80}")
     print(f"  FULL PIPELINE COMPLETE in {elapsed:.0f} seconds ({elapsed/60:.1f} min)")
     print(f"{'='*80}")

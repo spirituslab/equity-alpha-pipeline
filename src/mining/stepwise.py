@@ -218,12 +218,16 @@ def _evaluate_precomputed(
     if len(net) < 24:
         return 0, 0, 0, 0
 
-    full_sr = sharpe_ratio(net)
+    # Selection metric: use ONLY pre-OOS period (exclude 2015-2019 from selection)
+    # This prevents look-ahead bias — OOS is truly unseen
+    pre_oos_net = net[net.index < oos_start]
     oos_net = net[net.index >= oos_start]
+
+    selection_sr = sharpe_ratio(pre_oos_net) if len(pre_oos_net) > 12 else 0
     oos_sr = sharpe_ratio(oos_net) if len(oos_net) > 12 else 0
 
     attr = factor_attribution(net, factor_returns, rf)
     alpha = attr.get("alpha", 0)
     alpha_t = attr.get("alpha_t_stat", 0)
 
-    return full_sr, oos_sr, alpha, alpha_t
+    return selection_sr, oos_sr, alpha, alpha_t
