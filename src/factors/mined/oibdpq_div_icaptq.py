@@ -10,7 +10,7 @@ class OibdpqDivIcaptq(Factor):
     """oibdpq / icaptq
 
     Mining discovery metrics (dev period 1975-2004):
-        ICIR=0.228, Hit Rate=0.616,
+        ICIR=0.169, Hit Rate=0.566,
         Turnover=0.067, Spread t=2.91
     Validation ICIR (2005-2014): 0.256
     """

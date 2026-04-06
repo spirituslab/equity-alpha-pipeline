@@ -10,7 +10,7 @@ class OibdpqToMktcap(Factor):
     """oibdpq / market_cap
 
     Mining discovery metrics (dev period 1975-2004):
-        ICIR=0.266, Hit Rate=0.602,
+        ICIR=0.231, Hit Rate=0.552,
         Turnover=0.083, Spread t=4.19
     Validation ICIR (2005-2014): 0.188
     """

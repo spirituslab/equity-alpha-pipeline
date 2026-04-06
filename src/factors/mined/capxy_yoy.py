@@ -10,7 +10,7 @@ class CapxyYoy(Factor):
     """YoY growth of capxy
 
     Mining discovery metrics (dev period 1975-2004):
-        ICIR=-0.168, Hit Rate=0.430,
+        ICIR=-0.204, Hit Rate=0.414,
         Turnover=0.102, Spread t=-2.12
     Validation ICIR (2005-2014): -0.179
     """

@@ -8,6 +8,7 @@ import pandas as pd
 from src.analytics.ic import compute_ic_series, ic_summary
 from src.signals.zscore import standardize_signal
 from src.signals.report_card import _compute_signal_turnover, _compute_decile_spread
+from src.gpu.backend import GPU_AVAILABLE
 
 
 @dataclass
@@ -91,3 +92,52 @@ def validate_candidate(
 
     stats = ic_summary(ic_val)
     return stats.get("Mean IC", np.nan), stats.get("ICIR", np.nan)
+
+
+def batch_evaluate_gpu(
+    raw_signals: dict[str, pd.DataFrame],
+    returns: pd.DataFrame,
+    universe: pd.DataFrame,
+    dev_end: str,
+) -> dict[str, EvalResult]:
+    """GPU-batched evaluation: compute IC for all signals at once.
+
+    Much faster than calling quick_evaluate() in a loop.
+    """
+    from src.gpu.ic_batch import batch_compute_ic
+
+    # Standardize all signals first (CPU — fast enough)
+    z_signals = {}
+    for name, raw in raw_signals.items():
+        z_signals[name] = standardize_signal(raw, winsorize_pct=0.01)
+
+    # Batch IC computation on GPU
+    print(f"    GPU batch IC for {len(z_signals)} signals...")
+    ic_dict = batch_compute_ic(z_signals, returns, universe, end_date=dev_end)
+
+    # Build EvalResults
+    results = {}
+    for name in raw_signals:
+        ev = EvalResult(name=name)
+        if name in ic_dict:
+            ic = ic_dict[name]
+            stats = ic_summary(ic)
+            ev.dev_ic = stats.get("Mean IC", np.nan)
+            ev.dev_icir = stats.get("ICIR", np.nan)
+            ev.dev_hit_rate = stats.get("Hit Rate", np.nan)
+            ev.dev_t_stat = stats.get("t-stat", np.nan)
+            ev.n_months_dev = stats.get("N Months", 0)
+
+        # Turnover (CPU — per-signal, fast)
+        if name in z_signals:
+            ev.turnover = _compute_signal_turnover(z_signals[name])
+
+        # Decile spread (CPU — per-signal)
+        if name in z_signals:
+            spread = _compute_decile_spread(z_signals[name], returns, universe, end_date=dev_end)
+            ev.dev_spread = spread.get("spread", np.nan)
+            ev.dev_spread_t = spread.get("spread_t", np.nan)
+
+        results[name] = ev
+
+    return results

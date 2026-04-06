@@ -12,3 +12,4 @@ outputs/
 .DS_Store
 *.parquet
 uv.lock
+logs/

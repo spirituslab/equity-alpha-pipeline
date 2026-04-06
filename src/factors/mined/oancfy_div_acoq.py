@@ -10,7 +10,7 @@ class OancfyDivAcoq(Factor):
     """oancfy / acoq
 
     Mining discovery metrics (dev period 1975-2004):
-        ICIR=0.353, Hit Rate=0.647,
+        ICIR=0.284, Hit Rate=0.628,
         Turnover=0.118, Spread t=3.22
     Validation ICIR (2005-2014): 0.221
     """

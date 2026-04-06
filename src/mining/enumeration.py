@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from src.mining.config import (
     MiningConfig, ALL_FUNDAMENTAL_FIELDS, INCOME_FIELDS, CASH_FLOW_FIELDS,
-    BALANCE_SHEET_FIELDS, ANALYST_FIELDS, RATIO_PAIR_RULES,
+    BALANCE_SHEET_FIELDS, ANALYST_FIELDS, RATIO_PAIR_RULES, DIFFERENCE_PAIRS,
 )
 from src.mining.transforms import TransformType
 
@@ -16,6 +16,7 @@ class CandidateSpec:
     transform: TransformType
     field_a: str
     field_b: str | None = None
+    field_c: str | None = None  # third field for DIFFERENCE_RATIO: (a - b) / c
     window: int | None = None
     sign: int = 1
 
@@ -81,6 +82,52 @@ def enumerate_candidates(config: MiningConfig) -> list[CandidateSpec]:
                     # Skip if already covered by normalization transforms
                     if name not in seen_names:
                         add(CandidateSpec(name, cat, TransformType.TWO_FIELD_RATIO, a, b))
+
+    # --- Difference transforms: (field_a - field_b) ---
+    if config.enable_difference:
+        for a_fields, b_fields, cat in DIFFERENCE_PAIRS:
+            for a in a_fields:
+                for b in b_fields:
+                    if a == b:
+                        continue
+                    add(CandidateSpec(f"{a}_minus_{b}", cat, TransformType.DIFFERENCE, a, b))
+
+    # --- Difference Ratio transforms: (field_a - field_b) / field_c ---
+    if config.enable_difference_ratio:
+        denominators = ["atq", "ceqq", "saleq"]  # common normalizers
+        for a_fields, b_fields, cat in DIFFERENCE_PAIRS:
+            for a in a_fields:
+                for b in b_fields:
+                    if a == b:
+                        continue
+                    for c in denominators:
+                        if c in (a, b):
+                            continue
+                        name = f"{a}_minus_{b}_div_{c}"
+                        add(CandidateSpec(name, cat, TransformType.DIFFERENCE_RATIO, a, b, field_c=c))
+                    # Also normalize by market cap
+                    name = f"{a}_minus_{b}_to_mktcap"
+                    add(CandidateSpec(name, "value", TransformType.DIFFERENCE_RATIO, a, b, field_c="__mktcap__"))
+
+    # --- Negate transforms ---
+    if config.enable_negate:
+        # Negate return (reversal), growth signals, volatility
+        add(CandidateSpec("neg_trt1m", "momentum", TransformType.NEGATE, "trt1m"))
+        for field in ALL_FUNDAMENTAL_FIELDS:
+            add(CandidateSpec(f"neg_{field}_yoy", "growth", TransformType.NEGATE, f"_growth_yoy_{field}"))
+            # Only makes sense if growth is already computed — skip, negate raw fields instead
+        # Negate level fields that might work inverted (high = bad)
+        for field in ["atq", "ltq", "dlttq", "dlcq", "invtq"]:
+            add(CandidateSpec(f"neg_{field}_level", "value", TransformType.NEGATE, field))
+
+    # --- Momentum with skip month ---
+    if config.enable_momentum_skip:
+        for skip in [1, 2, 3]:
+            for window in [3, 6, 9, 11]:
+                add(CandidateSpec(
+                    f"momentum_skip{skip}_{window}m", "momentum",
+                    TransformType.MOMENTUM_SKIP, "trt1m", window=window, sign=skip,
+                ))
 
     # --- Analyst transforms ---
     if config.enable_analyst:

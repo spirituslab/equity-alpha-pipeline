@@ -10,7 +10,7 @@ class OibdpqDivSeqq(Factor):
     """oibdpq / seqq
 
     Mining discovery metrics (dev period 1975-2004):
-        ICIR=0.247, Hit Rate=0.612,
+        ICIR=0.220, Hit Rate=0.586,
         Turnover=0.072, Spread t=2.11
     Validation ICIR (2005-2014): 0.222
     """

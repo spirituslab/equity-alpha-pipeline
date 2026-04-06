@@ -132,6 +132,30 @@ def _generate_compute_body(spec: CandidateSpec) -> str:
                 f'{indent}fy1 = panel.pivot("FY_1")\n'
                 f'{indent}return remove_infinities(-surpstdev / fy1.abs())')
 
+    elif t == TransformType.DIFFERENCE:
+        return (f'{indent}a = panel.pivot("{spec.field_a}")\n'
+                f'{indent}b = panel.pivot("{spec.field_b}")\n'
+                f'{indent}return a - b')
+
+    elif t == TransformType.DIFFERENCE_RATIO:
+        if spec.field_c == "__mktcap__":
+            c_line = f'{indent}c = panel.pivot("prccm") * panel.pivot("cshoq")'
+        else:
+            c_line = f'{indent}c = panel.pivot("{spec.field_c}")'
+        return (f'{indent}a = panel.pivot("{spec.field_a}")\n'
+                f'{indent}b = panel.pivot("{spec.field_b}")\n'
+                f'{c_line}\n'
+                f'{indent}return remove_infinities((a - b) / c)')
+
+    elif t == TransformType.NEGATE:
+        return f'{indent}return -panel.pivot("{spec.field_a}")'
+
+    elif t == TransformType.MOMENTUM_SKIP:
+        skip = spec.sign
+        w = spec.window or 11
+        return (f'{indent}trt1m = panel.pivot("trt1m")\n'
+                f'{indent}return trt1m.shift({skip}).rolling(window={w}).mean()')
+
     return f'{indent}raise NotImplementedError("Unknown transform")'
 
 
@@ -153,6 +177,10 @@ def _describe_formula(spec: CandidateSpec) -> str:
         TransformType.VOLATILITY: f"Negative {spec.window}M volatility",
         TransformType.HIGH_LOW_RANGE: f"(high - low) / close",
         TransformType.TWO_FIELD_RATIO: f"{a} / {b}",
+        TransformType.DIFFERENCE: f"{a} - {b}",
+        TransformType.DIFFERENCE_RATIO: f"({a} - {b}) / {spec.field_c}",
+        TransformType.NEGATE: f"-{a}",
+        TransformType.MOMENTUM_SKIP: f"skip({spec.sign}) rolling({spec.window}M) momentum",
         TransformType.ANALYST_REVISION: f"(NUMUP - NUMDOWN) / NUMEST",
         TransformType.ANALYST_SUE: f"surpmean / surpstdev (SUE)",
         TransformType.ANALYST_DISPERSION: f"-surpstdev / |FY_1| (negative dispersion)",

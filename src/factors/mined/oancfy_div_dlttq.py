@@ -10,7 +10,7 @@ class OancfyDivDlttq(Factor):
     """oancfy / dlttq
 
     Mining discovery metrics (dev period 1975-2004):
-        ICIR=0.384, Hit Rate=0.652,
+        ICIR=0.365, Hit Rate=0.634,
         Turnover=0.109, Spread t=3.81
     Validation ICIR (2005-2014): 0.280
     """

@@ -29,6 +29,24 @@ RATIO_PAIR_RULES = [
     (BALANCE_SHEET_FIELDS, BALANCE_SHEET_FIELDS, "value"), # leverage / composition
 ]
 
+# Economically meaningful difference pairs: (a - b)
+DIFFERENCE_PAIRS = [
+    # Gross profit: revenue - costs
+    (["saleq"], ["cogsq"], "quality"),
+    # Net income quality: income - cash flow (accruals)
+    (["ibq", "ibcomq"], ["oancfy"], "quality"),
+    # Operating income variants
+    (["saleq"], ["cogsq", "apq"], "quality"),
+    (["oibdpq"], ["cogsq"], "quality"),
+    # Net debt / liquidity
+    (["dlttq", "ltq"], ["cheq"], "value"),
+    (["dlcq"], ["cheq"], "value"),
+    # Working capital
+    (["rectq", "invtq"], ["apq", "lctq"], "quality"),
+    # Retained earnings proxy
+    (["ibq"], ["dvpsxq"], "quality"),
+]
+
 
 @dataclass
 class MiningConfig:
@@ -53,6 +71,10 @@ class MiningConfig:
     enable_volatility: bool = True
     enable_high_low_range: bool = True
     enable_two_field_ratio: bool = True
+    enable_difference: bool = True
+    enable_difference_ratio: bool = True
+    enable_negate: bool = True
+    enable_momentum_skip: bool = True
     enable_analyst: bool = True
 
     momentum_windows: list[int] = field(default_factory=lambda: [3, 6, 9, 12])

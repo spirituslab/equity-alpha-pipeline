@@ -1,4 +1,4 @@
-"""Auto-generated signal: ibcomq_to_mktcap"""
+"""Auto-generated signal: saleq_to_mktcap"""
 
 import pandas as pd
 
@@ -6,19 +6,19 @@ from src.data.cleaner import remove_infinities
 from src.factors.base import Factor
 
 
-class IbcomqToMktcap(Factor):
-    """ibcomq / market_cap
+class SaleqToMktcap(Factor):
+    """saleq / market_cap
 
     Mining discovery metrics (dev period 1975-2004):
-        ICIR=0.231, Hit Rate=0.593,
-        Turnover=0.169, Spread t=6.76
-    Validation ICIR (2005-2014): 0.302
+        ICIR=0.164, Hit Rate=0.586,
+        Turnover=0.019, Spread t=2.66
+    Validation ICIR (2005-2014): 0.132
     """
 
-    name = "ibcomq_to_mktcap"
+    name = "saleq_to_mktcap"
     category = "value"
 
     def compute(self, panel) -> pd.DataFrame:
-        field = panel.pivot("ibcomq")
+        field = panel.pivot("saleq")
         mktcap = panel.pivot("prccm") * panel.pivot("cshoq")
         return remove_infinities(field / mktcap)

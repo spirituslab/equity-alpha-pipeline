@@ -10,7 +10,7 @@ class OancfyDivRectq(Factor):
     """oancfy / rectq
 
     Mining discovery metrics (dev period 1975-2004):
-        ICIR=0.349, Hit Rate=0.676,
+        ICIR=0.271, Hit Rate=0.628,
         Turnover=0.092, Spread t=4.00
     Validation ICIR (2005-2014): 0.229
     """

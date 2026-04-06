@@ -24,6 +24,11 @@ class TransformType(Enum):
     ANALYST_REVISION = "analyst_revision"
     ANALYST_SUE = "analyst_sue"
     ANALYST_DISPERSION = "analyst_dispersion"
+    # New transforms (v2)
+    DIFFERENCE = "difference"                 # field_a - field_b
+    DIFFERENCE_RATIO = "difference_ratio"     # (field_a - field_b) / field_c (via spec.window as field_c index)
+    NEGATE = "negate"                         # -field
+    MOMENTUM_SKIP = "momentum_skip"           # shift(skip).rolling(window).mean()
 
 
 def apply_transform(panel, spec, pivot_cache: dict) -> pd.DataFrame:
@@ -111,6 +116,31 @@ def apply_transform(panel, spec, pivot_cache: dict) -> pd.DataFrame:
         surpstdev = _get_field(panel, "surpstdev", pivot_cache)
         fy1 = _get_field(panel, "FY_1", pivot_cache)
         return remove_infinities(-surpstdev / fy1.abs())  # negative: low dispersion = good
+
+    elif t == TransformType.DIFFERENCE:
+        a = _get_field(panel, spec.field_a, pivot_cache)
+        b = _get_field(panel, spec.field_b, pivot_cache)
+        return a - b
+
+    elif t == TransformType.DIFFERENCE_RATIO:
+        # (field_a - field_b) / field_c
+        a = _get_field(panel, spec.field_a, pivot_cache)
+        b = _get_field(panel, spec.field_b, pivot_cache)
+        if spec.field_c == "__mktcap__":
+            c = _get_mktcap(panel, pivot_cache)
+        else:
+            c = _get_field(panel, spec.field_c, pivot_cache)
+        return remove_infinities((a - b) / c)
+
+    elif t == TransformType.NEGATE:
+        field = _get_field(panel, spec.field_a, pivot_cache)
+        return -field
+
+    elif t == TransformType.MOMENTUM_SKIP:
+        trt1m = _get_field(panel, "trt1m", pivot_cache)
+        skip = spec.sign  # reuse sign field for skip months
+        window = spec.window or 11
+        return trt1m.shift(skip).rolling(window=window).mean()
 
     else:
         raise ValueError(f"Unknown transform: {t}")

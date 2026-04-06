@@ -11,8 +11,9 @@ from src.data.loader import DataPanel
 from src.mining.config import MiningConfig
 from src.mining.enumeration import enumerate_candidates, CandidateSpec
 from src.mining.compute import compute_all_candidates
-from src.mining.evaluate import quick_evaluate, validate_candidate, EvalResult
+from src.mining.evaluate import quick_evaluate, validate_candidate, batch_evaluate_gpu, EvalResult
 from src.mining.filter import filter_dev_period, filter_val_period
+from src.signals.zscore import standardize_signal
 from src.mining.deduplicate import deduplicate
 from src.mining.codegen import generate_factor_file
 from src.signals.zscore import standardize_signal
@@ -45,20 +46,60 @@ def run_mining(pipeline_config: PipelineConfig, mining_config: MiningConfig) -> 
     print("\n  Step 2: Computing candidate signals...")
     raw_signals = compute_all_candidates(panel, specs, show_progress=True)
 
-    # ---- 3. Evaluate on dev period ----
-    print("\n  Step 3: Evaluating on development period (1975-2004)...")
-    evaluations = {}
-    for name in tqdm(raw_signals, desc="Evaluating"):
-        evaluations[name] = quick_evaluate(
-            name, raw_signals[name], returns, universe,
-            dev_end=pipeline_config.dates.dev_end,
-            val_end=pipeline_config.dates.val_end,
-        )
+    # ---- 3. Cascaded evaluation: IC first (GPU), then turnover+spread only for survivors ----
+    from src.gpu.backend import GPU_AVAILABLE
+    from src.gpu.ic_batch import batch_compute_ic
+    from src.analytics.ic import compute_ic_series, ic_summary as _ic_summary
+    from src.signals.report_card import _compute_signal_turnover, _compute_decile_spread
 
-    # ---- 4. Filter by dev thresholds ----
-    print("\n  Step 4: Filtering by dev-period thresholds...")
-    dev_survivors = filter_dev_period(evaluations, mining_config)
-    print(f"    {len(dev_survivors)} / {len(evaluations)} passed dev filters")
+    # Step 3a: Standardize all signals
+    print("\n  Step 3a: Standardizing signals...")
+    z_signals = {}
+    for name, raw in raw_signals.items():
+        z_signals[name] = standardize_signal(raw, winsorize_pct=0.01)
+
+    # Step 3b: GPU batch IC (fast, ~1 min for 770 signals)
+    print(f"\n  Step 3b: GPU batch IC evaluation ({len(z_signals)} signals)...")
+    if GPU_AVAILABLE and len(z_signals) > 20:
+        ic_dict = batch_compute_ic(z_signals, returns, universe, end_date=pipeline_config.dates.dev_end)
+    else:
+        ic_dict = {}
+        for name in tqdm(z_signals, desc="IC eval"):
+            ic_dict[name] = compute_ic_series(z_signals[name], returns, universe, end_date=pipeline_config.dates.dev_end)
+
+    # Build IC-only evaluations
+    evaluations = {}
+    for name in raw_signals:
+        ev = EvalResult(name=name)
+        if name in ic_dict and len(ic_dict[name]) > 0:
+            stats = _ic_summary(ic_dict[name])
+            ev.dev_ic = stats.get("Mean IC", np.nan)
+            ev.dev_icir = stats.get("ICIR", np.nan)
+            ev.dev_hit_rate = stats.get("Hit Rate", np.nan)
+            ev.dev_t_stat = stats.get("t-stat", np.nan)
+            ev.n_months_dev = stats.get("N Months", 0)
+        evaluations[name] = ev
+
+    # Step 3c: Filter by IC first (cheap filter, removes ~80% of candidates)
+    ic_threshold = mining_config.min_icir_dev
+    ic_survivors = {n: ev for n, ev in evaluations.items()
+                    if not np.isnan(ev.dev_icir) and abs(ev.dev_icir) >= ic_threshold}
+    print(f"\n  Step 3c: IC filter: {len(ic_survivors)} / {len(evaluations)} passed (|ICIR| >= {ic_threshold})")
+
+    # Step 3d: Compute turnover + decile spread ONLY for IC survivors
+    print(f"\n  Step 3d: Computing turnover + spread for {len(ic_survivors)} IC survivors...")
+    for i, (name, ev) in enumerate(ic_survivors.items()):
+        if (i + 1) % 25 == 0:
+            print(f"    [{i+1}/{len(ic_survivors)}]...")
+        ev.turnover = _compute_signal_turnover(z_signals[name])
+        spread = _compute_decile_spread(z_signals[name], returns, universe, end_date=pipeline_config.dates.dev_end)
+        ev.dev_spread = spread.get("spread", np.nan)
+        ev.dev_spread_t = spread.get("spread_t", np.nan)
+
+    # ---- 4. Filter remaining thresholds (turnover, hit rate, spread) ----
+    print("\n  Step 4: Filtering by remaining thresholds...")
+    dev_survivors = filter_dev_period(ic_survivors, mining_config)
+    print(f"    {len(dev_survivors)} / {len(ic_survivors)} passed all dev filters")
     print(f"    Thresholds: |ICIR|>{mining_config.min_icir_dev}, "
           f"HR>{mining_config.min_hit_rate}, "
           f"TO<{mining_config.max_turnover}, "
@@ -69,7 +110,7 @@ def run_mining(pipeline_config: PipelineConfig, mining_config: MiningConfig) -> 
         mining_config.min_icir_dev = 0.10
         mining_config.min_hit_rate = 0.50
         mining_config.min_spread_t = 1.5
-        dev_survivors = filter_dev_period(evaluations, mining_config)
+        dev_survivors = filter_dev_period(ic_survivors, mining_config)
         print(f"    {len(dev_survivors)} passed with loosened thresholds")
 
     # ---- 5. Validate survivors on holdout period ----

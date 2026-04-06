@@ -10,7 +10,7 @@ class OancfyLevel(Factor):
     """Raw oancfy
 
     Mining discovery metrics (dev period 1975-2004):
-        ICIR=0.315, Hit Rate=0.647,
+        ICIR=0.308, Hit Rate=0.641,
         Turnover=0.085, Spread t=2.36
     Validation ICIR (2005-2014): 0.119
     """

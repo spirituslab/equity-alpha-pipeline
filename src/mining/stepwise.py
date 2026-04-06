@@ -1,16 +1,7 @@
 """Forward stepwise signal selection at the portfolio level.
 
-Instead of picking signals by individual IC, this tests which combination
-actually produces the best portfolio Sharpe by running backtests.
-
-Algorithm:
-1. Start with empty signal set
-2. For each candidate signal, add it to the set and run a backtest
-3. Keep the signal that improves portfolio Sharpe the most
-4. Repeat until no addition improves Sharpe (or max signals reached)
-
-This is greedy forward selection — O(K^2) backtests where K is the number
-of candidates. With K=40 and ~1 sec/backtest, this takes ~15 minutes.
+Precomputes ALL neutralized signals once, then stepwise only does
+combine + backtest per candidate (~1 sec instead of ~40 sec).
 """
 
 from dataclasses import dataclass
@@ -26,6 +17,7 @@ from src.signals.combine import combine_signals
 from src.portfolio.backtest import WalkForwardBacktest
 from src.analytics.performance import sharpe_ratio
 from src.analytics.attribution import factor_attribution
+from src.gpu.backend import GPU_AVAILABLE
 
 
 @dataclass
@@ -38,7 +30,7 @@ class StepResult:
     ff_alpha: float
     ff_alpha_t: float
     n_signals: int
-    improvement: float  # delta in eval metric from previous step
+    improvement: float
 
 
 def forward_stepwise_selection(
@@ -54,24 +46,53 @@ def forward_stepwise_selection(
     eval_metric: str = "full_sharpe",
     max_signals: int = 15,
     min_improvement: float = 0.01,
+    projection_cache=None,
 ) -> list[StepResult]:
     """Forward stepwise signal selection via portfolio-level backtesting.
 
-    Args:
-        candidate_signals: dict of signal name -> raw (date x gvkey) DataFrame
-        returns, universe, sector_labels, log_mcap, beta: pipeline data
-        factor_returns: FF5+Mom (no RF column)
-        rf: risk-free rate series
-        config: pipeline config
-        eval_metric: "full_sharpe", "oos_sharpe", or "ff_alpha_t"
-        max_signals: stop after this many signals
-        min_improvement: stop if best improvement < this threshold
-
-    Returns:
-        List of StepResult for each step
+    Key optimization: precompute ALL neutralized signals once upfront.
+    Each stepwise trial then only does combine + backtest (~1 sec).
     """
     oos_start = pd.Period("2015-01", "M")
 
+    # ---- Precompute ALL neutralized signals (one-time cost) ----
+    print(f"\n  Precomputing neutralized signals for {len(candidate_signals)} candidates...")
+
+    # Build projection cache if not provided
+    if projection_cache is None:
+        from src.gpu.neutralize_batch import ProjectionCache
+        print(f"    Building projection matrix cache...")
+        projection_cache = ProjectionCache()
+        projection_cache.build(
+            sector_labels=sector_labels,
+            log_mcap=log_mcap,
+            beta=beta,
+            neutralize_sector=True,
+            neutralize_size=True,
+            neutralize_beta=True,
+        )
+        print(f"    Cached {len(projection_cache.projections)} dates")
+
+    precomputed_neutral = {}
+    for i, (name, raw) in enumerate(candidate_signals.items()):
+        z = standardize_signal(raw, winsorize_pct=0.01)
+        if projection_cache._built:
+            if GPU_AVAILABLE:
+                n = projection_cache.neutralize_fast_gpu(z)
+            else:
+                n = projection_cache.neutralize_fast(z)
+        else:
+            n = neutralize_signal(
+                z, sector_labels=sector_labels, log_mcap=log_mcap, beta=beta,
+                neutralize_sector=True, neutralize_size=True, neutralize_beta=True,
+            )
+        precomputed_neutral[name] = n
+        if (i + 1) % 10 == 0:
+            print(f"    [{i+1}/{len(candidate_signals)}] neutralized")
+
+    print(f"    All {len(precomputed_neutral)} signals precomputed")
+
+    # ---- Stepwise selection (combine + backtest only, ~1 sec per trial) ----
     remaining = set(candidate_signals.keys())
     selected = []
     history = []
@@ -93,10 +114,10 @@ def forward_stepwise_selection(
         for name in tqdm(sorted(remaining), desc=f"Step {step}", leave=False):
             trial_set = selected + [name]
 
-            # Neutralize + combine trial set
-            metric_val, full_sr, oos_sr, alpha, alpha_t = _evaluate_signal_set(
-                trial_set, candidate_signals, returns, universe,
-                sector_labels, log_mcap, beta, factor_returns, rf, config, oos_start,
+            # Just look up precomputed neutralized signals + combine + backtest
+            full_sr, oos_sr, alpha, alpha_t = _evaluate_precomputed(
+                trial_set, precomputed_neutral, returns, universe,
+                factor_returns, rf, config, oos_start,
             )
 
             trial_metric = {
@@ -115,12 +136,10 @@ def forward_stepwise_selection(
 
         improvement = best_metric - current_metric if current_metric > -999 else best_metric
 
-        # Check improvement threshold (skip for first signal)
         if step > 1 and improvement < min_improvement:
             print(f"\n  Stopping: best improvement {improvement:+.4f} < threshold {min_improvement}")
             break
 
-        # Accept
         selected.append(best_name)
         remaining.discard(best_name)
         current_metric = best_metric
@@ -163,47 +182,32 @@ def forward_stepwise_selection(
     return history
 
 
-def _evaluate_signal_set(
+def _evaluate_precomputed(
     signal_names: list[str],
-    all_signals: dict[str, pd.DataFrame],
+    precomputed_neutral: dict[str, pd.DataFrame],
     returns: pd.DataFrame,
     universe: pd.DataFrame,
-    sector_labels: pd.DataFrame,
-    log_mcap: pd.DataFrame,
-    beta: pd.DataFrame,
     factor_returns: pd.DataFrame,
     rf: pd.Series,
     config: PipelineConfig,
     oos_start: pd.Period,
-) -> tuple[float, float, float, float, float]:
-    """Neutralize, combine, backtest a signal set. Return metrics."""
+) -> tuple[float, float, float, float]:
+    """Combine precomputed neutralized signals + backtest. ~1 sec per call."""
 
-    # Standardize + neutralize
-    neutral = {}
-    for name in signal_names:
-        z = standardize_signal(all_signals[name], winsorize_pct=0.01)
-        n = neutralize_signal(
-            z,
-            sector_labels=sector_labels,
-            log_mcap=log_mcap,
-            beta=beta,
-            neutralize_sector=True,
-            neutralize_size=True,
-            neutralize_beta=True,
-        )
-        neutral[name] = n
+    # Look up precomputed neutralized signals
+    neutral = {name: precomputed_neutral[name] for name in signal_names}
 
-    # Combine (equal weight for speed — IC-weighted is too slow for stepwise)
+    # Combine (equal weight)
     composite = combine_signals(neutral, method="equal")
 
-    # Backtest (naive L/S for speed)
+    # Backtest (naive L/S)
     bt = WalkForwardBacktest(
         config=config,
         alpha_scores=composite,
         stock_returns=returns,
         factor_returns=factor_returns,
-        beta=beta,
-        sector_labels=sector_labels,
+        beta=pd.DataFrame(),  # beta not needed for naive L/S
+        sector_labels=pd.DataFrame(),
         universe=universe,
         rf=rf,
         use_optimizer=False,
@@ -212,7 +216,7 @@ def _evaluate_signal_set(
     net = result.net_returns
 
     if len(net) < 24:
-        return 0, 0, 0, 0, 0
+        return 0, 0, 0, 0
 
     full_sr = sharpe_ratio(net)
     oos_net = net[net.index >= oos_start]
@@ -222,4 +226,4 @@ def _evaluate_signal_set(
     alpha = attr.get("alpha", 0)
     alpha_t = attr.get("alpha_t_stat", 0)
 
-    return full_sr, full_sr, oos_sr, alpha, alpha_t
+    return full_sr, oos_sr, alpha, alpha_t

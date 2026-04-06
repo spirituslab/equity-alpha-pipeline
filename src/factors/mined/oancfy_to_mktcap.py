@@ -10,7 +10,7 @@ class OancfyToMktcap(Factor):
     """oancfy / market_cap
 
     Mining discovery metrics (dev period 1975-2004):
-        ICIR=0.414, Hit Rate=0.667,
+        ICIR=0.406, Hit Rate=0.662,
         Turnover=0.145, Spread t=5.92
     Validation ICIR (2005-2014): 0.245
     """

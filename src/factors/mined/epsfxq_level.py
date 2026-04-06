@@ -10,7 +10,7 @@ class EpsfxqLevel(Factor):
     """Raw epsfxq
 
     Mining discovery metrics (dev period 1975-2004):
-        ICIR=0.333, Hit Rate=0.664,
+        ICIR=0.221, Hit Rate=0.600,
         Turnover=0.104, Spread t=3.45
     Validation ICIR (2005-2014): 0.206
     """

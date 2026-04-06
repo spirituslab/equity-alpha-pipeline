@@ -10,7 +10,7 @@ class CheqYoy(Factor):
     """YoY growth of cheq
 
     Mining discovery metrics (dev period 1975-2004):
-        ICIR=0.203, Hit Rate=0.604,
+        ICIR=0.192, Hit Rate=0.614,
         Turnover=0.152, Spread t=2.51
     Validation ICIR (2005-2014): 0.232
     """

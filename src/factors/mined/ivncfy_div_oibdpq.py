@@ -10,7 +10,7 @@ class IvncfyDivOibdpq(Factor):
     """ivncfy / oibdpq
 
     Mining discovery metrics (dev period 1975-2004):
-        ICIR=0.196, Hit Rate=0.623,
+        ICIR=0.234, Hit Rate=0.634,
         Turnover=0.156, Spread t=2.17
     Validation ICIR (2005-2014): 0.213
     """

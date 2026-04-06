@@ -10,7 +10,7 @@ class CshoqToSales(Factor):
     """cshoq / sales
 
     Mining discovery metrics (dev period 1975-2004):
-        ICIR=-0.162, Hit Rate=0.416,
+        ICIR=-0.176, Hit Rate=0.393,
         Turnover=0.011, Spread t=-2.12
     Validation ICIR (2005-2014): -0.145
     """

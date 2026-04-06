@@ -10,7 +10,7 @@ class OancfyDivCheq(Factor):
     """oancfy / cheq
 
     Mining discovery metrics (dev period 1975-2004):
-        ICIR=0.200, Hit Rate=0.559,
+        ICIR=0.161, Hit Rate=0.572,
         Turnover=0.094, Spread t=2.44
     Validation ICIR (2005-2014): 0.142
     """
