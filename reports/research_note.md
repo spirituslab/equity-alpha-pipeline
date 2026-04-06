@@ -444,14 +444,24 @@ The optimizer improves OOS Sharpe from 0.39 to 0.46 (+18%) and alpha t-stat from
 
 ### 9.4 Factor Attribution
 
+Time-series regression of monthly portfolio returns on Fama-French 5 factors + Momentum (Newey-West HAC standard errors, 540 observations):
+
 ```
 r_{p,t} - rf = α + β₁·MktRF + β₂·SMB + β₃·HML + β₄·RMW + β₅·CMA + β₆·Mom + ε
 ```
 
-| Factor | Loading | Interpretation |
-|--------|---------|----------------|
-| **Alpha (annualized)** | **7.5% (t=5.49)** | **Genuine stock selection** |
-| R-squared | 0.116 | 88% of variance is idiosyncratic |
+| Factor | Loading | t-stat | Interpretation |
+|--------|---------|--------|----------------|
+| **Alpha (ann.)** | **+7.5%** | **5.49*** | **Genuine stock selection — unexplained by any factor** |
+| Mkt-RF | +0.013 | 0.50 | Near-zero market exposure — dollar-neutral working |
+| SMB | +0.111 | 2.44** | Mild small-cap tilt |
+| HML | +0.258 | 3.99*** | Value tilt (expected — signals are cash-flow-to-price ratios) |
+| RMW | +0.288 | 4.99*** | Profitability tilt (expected — signals measure cash quality) |
+| CMA | -0.169 | -1.58 | Not significant |
+| Mom | -0.017 | -0.55 | No momentum exposure |
+| **R-squared** | **0.116** | | **88% of variance is idiosyncratic (stock-specific)** |
+
+The alpha of 7.5% (t=5.49) is significant at the 1% level. The HML and RMW loadings are expected — our signals are cash-flow-to-price and profitability ratios, which naturally correlate with value and quality factors. The key finding is that **alpha remains highly significant even after controlling for these exposures** — the signals capture stock-specific information beyond what systematic factors explain.
 
 ### 9.5 Statistical Tests
 
