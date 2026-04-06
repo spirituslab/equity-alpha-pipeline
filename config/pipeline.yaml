@@ -1,0 +1,63 @@
+dates:
+  start: "1962-01"
+  end: "2019-12"
+  burn_in_end: "1974-12"
+  dev_end: "2004-12"
+  val_end: "2014-12"
+  # OOS: 2015-01 to 2019-12
+
+data:
+  compustat_file: "compustat_crsp.csv"
+  sp500_file: "sp500_returns.csv"
+  sector_file: "sector_mapping.csv"
+  raw_dir: "data/raw"
+  cache_dir: "data/cache"
+
+universe:
+  min_mcap_mm: 100          # $100M minimum market cap
+  min_history_months: 12    # 12 months of return history required
+  sp500_only: true
+
+signals:
+  active:
+    - momentum_12_2
+    - st_reversal
+    - roe
+    - asset_growth
+    - gross_profitability
+    - accrual_ratio
+    # Mined signals (discovered by signal mining machine)
+    - ibcomq_to_mktcap
+    - oancfy_div_rectq
+    - epsfxq_to_mktcap
+    - ibcomq_yoy
+    - cheq_yoy
+  winsorize_pct: 0.01       # 1st/99th percentile
+  neutralize_sector: true
+  neutralize_size: true
+  neutralize_beta: true
+  combination_method: "ic_weighted"  # "equal", "ic_weighted", "ridge", "elastic_net", "xgboost"
+
+backtest:
+  lookback_cov: 60          # months for covariance estimation
+  lookback_signal: 36       # months for IC-weighted combination
+  lookback_ml: 60           # months for ML training window
+  purge_gap: 2              # months between train/test
+  rebalance_freq: "monthly"
+  n_long: 50
+  n_short: 50
+
+optimization:
+  risk_aversion: 1.0
+  turnover_penalty: 0.005
+  max_stock_weight: 0.02    # 2% per stock
+  max_sector_net: 0.05      # 5% net sector exposure
+  max_gross_leverage: 2.0   # 200% gross
+  max_beta_exposure: 0.05   # near zero beta
+
+costs:
+  base_bps: 10              # 10 bps round-trip
+  stress_bps: 30            # 30 bps round-trip
+
+output:
+  dir: "outputs"

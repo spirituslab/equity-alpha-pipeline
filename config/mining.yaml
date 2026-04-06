@@ -1,0 +1,30 @@
+thresholds:
+  min_icir_dev: 0.15
+  min_hit_rate: 0.52
+  max_turnover: 0.60
+  min_spread_t: 2.0
+  min_icir_val: 0.10
+  max_correlation: 0.70
+
+transforms:
+  enable_level: true
+  enable_ratio_to_mktcap: true
+  enable_ratio_to_assets: true
+  enable_ratio_to_equity: true
+  enable_ratio_to_sales: true
+  enable_growth_yoy: true
+  enable_growth_qoq: true
+  enable_acceleration: true
+  enable_momentum: true
+  enable_volatility: true
+  enable_high_low_range: true
+  enable_two_field_ratio: true
+  enable_analyst: true
+
+momentum_windows: [3, 6, 9, 12]
+volatility_windows: [3, 6, 12, 24]
+
+output:
+  factor_dir: "src/factors/mined"
+  results_csv: "outputs/mining_results.csv"
+  report_txt: "outputs/mining_report.txt"
