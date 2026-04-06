@@ -269,6 +269,8 @@ Keep only the residual ε — the part that is pure stock selection, not factor 
 
 **Why precompute:** Neutralization is deterministic — `neutralize(signal_X)` gives the same result regardless of what other signals are in the trial set. Without this cache, the stepwise loop would recompute the same signals hundreds of times. Speedup: **70×**.
 
+**Important nuance — projection matrix vs full OLS:** The projection matrix is a fast approximation. It builds one fixed valid-stock set per date, then neutralizes all signals against that set. Full OLS (used in Stage 7 final evaluation) adapts the valid-stock set per signal — if a particular signal has NaN for stocks that others don't, full OLS handles this correctly. The difference is small (Sharpe 1.617 via projection vs 1.605 via full OLS = 0.012), but it exists. The stepwise uses the projection approximation for speed during search. The final evaluation in Stage 7 always uses full OLS for the definitive numbers.
+
 Time: ~5 minutes (one-time).
 
 ---
@@ -378,6 +380,8 @@ We tested both equal-weight and IC-weighted combination:
 | Short Sharpe | -0.46 | -0.48 |
 
 **Equal-weight wins on every metric.** With only 3 strong signals, IC-weighting introduces estimation noise from trailing IC computation that hurts more than it helps. IC-weighting adds value when you have many signals with varying quality; with 3 strong signals, equal weight is more stable.
+
+**Note on Sharpe values:** The stepwise selection (Stage 6) reported pre-OOS Sharpe of 1.617 using the projection matrix approximation for neutralization. The Stage 7 final evaluation re-neutralizes from scratch using full OLS, producing 1.605. The 0.012 difference comes from per-signal NaN handling at the edges (see Section 7 note). All results in this section use the Stage 7 full-OLS numbers, which are definitive.
 
 ### 9.3 Factor Attribution
 
