@@ -365,23 +365,45 @@ Phase 1 (Stages 1-6) selected WHICH signals to use. Stage 7 evaluates HOW THEY P
 
 ### 9.1 Six Portfolio Variants
 
-Three combination methods × two construction methods = 6 variants:
+The portfolio construction has two independent choices:
 
-| Variant | Pre-OOS Sharpe | OOS Sharpe | FF Alpha | t-stat |
-|---------|---------------|------------|----------|--------|
-| Naive + Equal-Weight | 1.605 | 0.388 | 7.5% | 5.49 |
-| Naive + IC-Weighted | 1.596 | 0.068 | 6.7% | 4.69 |
-| Naive + Inverse-Vol | 1.605 | 0.417 | 7.4% | 5.54 |
-| **Optimizer + Equal-Weight** | **1.644** | **0.459** | **7.5%** | **5.64** |
-| Optimizer + IC-Weighted | 1.617 | -0.026 | 6.5% | 4.75 |
-| Optimizer + Inverse-Vol | 1.664 | 0.330 | 7.4% | 5.55 |
+**Step 1 — Signal combination:** How to blend the 3 signals into one composite alpha score per stock.
+- **Equal-Weight:** Each signal contributes equally: alpha = (signal_A + signal_B + signal_C) / 3
+- **IC-Weighted:** Weight by trailing 36-month IC (signals with stronger recent prediction get more weight)
+- **Inverse-Vol:** Weight by 1/std(IC) (signals with more consistent prediction get more weight)
+
+**Step 2 — Stock weighting:** Given the composite alpha score, how to assign weights to individual stocks.
+- **Naive L/S:** Equal weight per stock. Top 50 stocks get +2% each, bottom 50 get -2% each. No optimization.
+- **Constrained Optimizer:** cvxpy solves a QP to find the optimal weight for each stock, subject to neutrality constraints. Stock weights vary (e.g., AAPL +1.8%, MSFT +0.3%, GE -1.5%).
+
+3 signal combinations × 2 stock weighting methods = 6 variants:
+
+| Signal Combination | Stock Weighting | Pre-OOS Sharpe | OOS Sharpe | FF Alpha | t-stat |
+|-------------------|-----------------|---------------|------------|----------|--------|
+| Equal-Weight | Naive L/S | 1.605 | 0.388 | 7.5% | 5.49 |
+| IC-Weighted | Naive L/S | 1.596 | 0.068 | 6.7% | 4.69 |
+| Inverse-Vol | Naive L/S | 1.605 | 0.417 | 7.4% | 5.54 |
+| **Equal-Weight** | **Optimizer** | **1.644** | **0.459** | **7.5%** | **5.64** |
+| IC-Weighted | Optimizer | 1.617 | -0.026 | 6.5% | 4.75 |
+| Inverse-Vol | Optimizer | 1.664 | 0.330 | 7.4% | 5.55 |
 
 **Findings:**
-- **Optimizer + Equal-Weight wins OOS** (0.459). The constrained optimizer adds 0.04-0.07 Sharpe over naive L/S while enforcing dollar/beta/sector neutrality.
-- **Inverse-Vol beats IC-Weighted** consistently — weighting by consistency (1/volatility of IC) beats weighting by magnitude (trailing IC) with only 3 signals.
+- **Equal-Weight + Optimizer wins OOS** (0.459). The optimizer adds 0.04-0.07 Sharpe over naive L/S.
+- **Inverse-Vol beats IC-Weighted** consistently — weighting by consistency beats weighting by magnitude with only 3 signals.
 - **IC-Weighted collapses OOS** — trailing IC estimation too noisy with 3 signals.
 
-The constrained optimizer solves a QP at each monthly rebalance using a factor risk model (B @ F @ B' + D), enforcing: dollar-neutral, beta-neutral (|beta| < 0.05), sector-neutral (< 5% per sector), turnover penalty (kappa = 0.005), position limits (±2%), and gross leverage cap (200%).
+**Constrained optimizer constraints:**
+
+The optimizer solves a QP at each monthly rebalance using a factor risk model covariance (B @ F @ B' + D with trailing 60-month rolling window):
+
+| Constraint | Specification | Purpose |
+|------------|---------------|---------|
+| Dollar-neutral | sum(w) = 0 | No market direction bet |
+| Beta-neutral | \|portfolio beta\| ≤ 0.05 | No market factor exposure |
+| Sector-neutral | \|net weight per sector\| ≤ 5% | No sector bets |
+| Gross leverage | sum(\|w\|) ≤ 200% | Cap total exposure |
+| Position limit | -2% ≤ w_i ≤ 2% per stock | No single-stock concentration |
+| Turnover penalty | κ × \|\|w_new - w_old\|\|₁ in objective | Reduce trading costs |
 
 ### 9.2 Best Portfolio Performance (Equal-Weight Naive L/S)
 
