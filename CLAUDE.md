@@ -1,105 +1,154 @@
 # Equity Alpha Pipeline — Project Context
 
 ## What This Project Is
-- Factor-neutral long/short U.S. equity alpha research pipeline
-- Stock-level alpha scoring with cross-sectional neutralization
-- Dollar-neutral, beta-neutral, sector-neutral portfolio construction
-- ML extension (Ridge, ElasticNet) with purged cross-validation
-- Full robustness battery: ablation, subperiod, cost stress, regime, attribution
-- Companion to existing `quant-factor-portfolio-pipeline/` (factor-level allocation)
+Factor-neutral long/short U.S. equity alpha research pipeline with systematic signal mining.
+
+## Complete Workflow
+
+The system has TWO phases. Phase 1 decides WHICH signals. Phase 2 decides HOW TO TRADE them.
+
+### Phase 1: Signal Discovery (Stages 1-6)
+Replaces human signal selection with systematic mining + portfolio-level testing.
+
+```
+Stage 1: ENUMERATE — 770 candidate signals from transformation library
+    Transform types: level, ratio, growth, acceleration, difference,
+    difference_ratio, negate, momentum, volatility, two-field ratio, analyst
+    Applied to: 27 fundamental + 6 price + 8 analyst fields
+
+Stage 2: COMPUTE — pull raw fields, apply math, cache
+    Pivot cache: each field pivoted once, reused across candidates
+    Output: 743 valid signals (some fail due to missing data)
+
+Stage 3: PRE-SELECT — cascaded quality filters
+    3a. Standardize (winsorize 1/99 pct + z-score) — all 743
+    3b. GPU batch IC evaluation (RTX 4080, CuPy) — all 743, ~1 min
+    3c. IC filter (|ICIR| > 0.15) — 743 → ~138
+    3d. Turnover + decile spread (CPU, survivors only) — 138 only, ~5 min
+    3e. Full filter (HR>52%, TO<0.60, spread t>2.0) — 138 → ~77
+    WHY cascaded: computing turnover for all 743 takes 24 min. For 138 takes 5 min.
+
+Stage 4: VALIDATE + DEDUP
+    4a. Holdout validation (2005-2014, separate from dev 1975-2004) — 77 → ~57
+    4b. Correlation dedup (< 0.70) — 57 → ~27
+    WHY holdout: 770 candidates tested, some pass dev by chance
+
+Stage 5: PRECOMPUTE NEUTRALIZATION
+    Neutralize ALL ~54 candidates (27 mined + originals) once upfront
+    Uses projection matrix cache: M_t = I - X(X'X)⁻¹X'
+    WHY precompute: neutralization is deterministic. Stepwise would
+    recompute the same signals hundreds of times without this.
+
+Stage 6: FORWARD STEPWISE PORTFOLIO SELECTION
+    Start empty. Each step: test adding each remaining candidate.
+    Per trial: look up precomputed neutral signal → combine → backtest → Sharpe
+    Selection criterion: pre-OOS Sharpe (1975-2014). OOS (2015-2019) NEVER used for selection.
+    Equal-weight combination during selection (zero overfitting risk).
+    Stop when no addition improves Sharpe by > 0.01.
+    Output: optimal signal set (typically 4-6 signals)
+```
+
+### Phase 2: Portfolio Construction (Step 9)
+Takes the optimal signals from Phase 1, runs them through the FULL portfolio pipeline.
+
+```
+Step 9: FINAL EVALUATION
+    Input: 6 optimal signal names from stepwise
+    → Look up precomputed neutralized signals
+    → IC-weighted combination (adaptive signal weights from trailing IC)
+    → Constrained optimizer (dollar/beta/sector neutral, turnover penalty) [TODO]
+    → Walk-forward backtest (541 months, 10 bps costs)
+    → Factor attribution (FF5+Mom, Newey-West HAC)
+    → Bootstrap CIs on OOS Sharpe
+    → Long vs short leg attribution
+```
+
+### Why Two Phases
+- Phase 1 uses EQUAL-WEIGHT + NAIVE L/S to select signals. This has zero tunable
+  parameters, preventing overfitting during selection.
+- Phase 2 uses IC-WEIGHTED + CONSTRAINED OPTIMIZER for the final portfolio. This
+  squeezes more performance from the selected signals, but is only applied once
+  to the final set, not during the search.
+
+### Critical Anti-Leakage Rules
+- Signal discovery (IC evaluation): development period ONLY (1975-2004)
+- Signal validation: holdout period ONLY (2005-2014)
+- Stepwise selection criterion: pre-OOS Sharpe (1975-2014) ONLY
+- OOS (2015-2019): NEVER used for any decision, only for final reporting
+- IC computation: signal at date t, returns at t+1 (next period)
+- Quarterly fundamentals: 3-month forward-fill (no filing date look-ahead)
 
 ## Tech Stack
-- Python 3.12 (pinned via `.python-version`)
-- Package manager: `uv` (not pip, not conda)
-- Build backend: `hatchling`
-- Pinned: numpy<2.1, pandas<2.3, scipy<1.15 (avoid segfaults)
-- Data: CRSP/Compustat (symlinked from existing project, 569K rows)
+- Python 3.12, uv package manager, hatchling build
+- GPU: CuPy (cupy-cuda13x) on RTX 4080 SUPER (16GB VRAM)
+- CUDA toolkit 13.1 at /opt/cuda/
 - Optimization: cvxpy with SCS solver
-- Risk model: Factor model covariance (B @ F @ B' + D) using FF5+Mom
-
-## Key Architecture
-- **Signal Factory**: `Signal` protocol in `src/factors/base.py`, auto-discovery via `SignalRegistry`
-- **Pipeline**: raw → zscore → neutralize → combine → optimize → backtest → evaluate
-- **Config-driven**: `config/pipeline.yaml` controls active signals, parameters
-- **Adding a new signal** = one file in `src/factors/`, register in `src/signals/registry.py`
-
-## Data
-- `data/raw/compustat_crsp.csv` → symlink to existing project (569K rows, 1962-2020)
-- `data/raw/sp500_returns.csv` → symlink to existing project
-- `data/raw/sector_mapping.csv` → generated by `scripts/build_sector_mapping.py` (SEC EDGAR SIC codes)
-- Returns in `trt1m` column are percentage points — DataPanel divides by 100
-- Quarterly fields forward-filled up to 3 months (no look-ahead)
-- Sector mapping: 37.5% coverage via EDGAR, rest assigned "Other" (historical/delisted companies)
-
-## Signals (6 core active)
-- momentum_12_2, st_reversal, roe, asset_growth, gross_profitability, accrual_ratio
-- Optional: earnings_yield, idio_vol
-- Best signal: ROE (ICIR 0.35, t=7.67)
-- Load-bearing: st_reversal, gross_profitability (removing either drops OOS Sharpe by ~0.12)
-- Dead weight: asset_growth (IC near zero), accrual_ratio (negative IC, IC-weighted blend handles)
-
-## Key Results
-- **FF Alpha: 4.0% annualized, t-stat 2.22 (p=0.027)** — statistically significant
-- **Full-sample Sharpe: 0.62 (net of 10 bps costs)**
-- **OOS Sharpe (2015-2019): 0.42** with bootstrap CI [-0.54, 1.74]
-- ML (Ridge/ElasticNet) underperforms IC-weighted blend — expected with only 6 features
-- Strategy works better in bear markets (bear Sharpe 0.71 > bull 0.60)
-- Alpha is entirely from long leg (long Sharpe 0.95, short Sharpe -0.47)
-- Neutralization is critical: without it, FF alpha drops to zero
+- Data: CRSP/Compustat (symlinked, 569K rows, 1962-2020)
 
 ## How to Run
 ```bash
 uv sync
-uv run python scripts/build_sector_mapping.py   # one-time: build sector data from SEC EDGAR
-uv run python scripts/stage_1_features.py        # compute + cache signals
-uv run python scripts/stage_2_signals.py         # neutralize + combine + report cards
-uv run python scripts/stage_3_backtest.py        # walk-forward backtest (naive + optimizer)
-uv run python scripts/stage_4_ml.py              # ML extension comparison
-uv run python scripts/stage_5_robustness.py      # full robustness battery
-uv run python scripts/run_all.py                 # run stages 1-5
+uv pip install cupy-cuda13x                      # GPU (requires CUDA toolkit)
+uv run python scripts/build_sector_mapping.py     # one-time: SEC EDGAR sectors
+uv run python scripts/stage_1_features.py         # cache control variables
+uv run python scripts/run_full_pipeline.py        # FULL WORKFLOW: mine → stepwise → final eval
+```
+
+Individual stages (for debugging / analysis):
+```bash
+uv run python scripts/stage_2_signals.py          # neutralize + combine + report cards
+uv run python scripts/stage_3_backtest.py         # backtest (naive + optimizer)
+uv run python scripts/stage_4_ml.py               # ML extension comparison
+uv run python scripts/stage_5_robustness.py       # robustness battery
+uv run python scripts/stage_7_stepwise.py         # stepwise selection standalone
+uv run python scripts/run_mining.py               # mining standalone
 ```
 
 ## Project Structure
 ```
 src/
-  config.py               # PipelineConfig dataclasses
-  data/
-    loader.py             # DataPanel (CRSP/Compustat)
-    sectors.py            # Ken French 12-industry SIC mapping
-    french.py             # FF5+Mom factor loader
-    cleaner.py            # remove_infinities, winsorize
-  factors/
-    base.py               # Factor ABC (= Signal protocol)
-    momentum.py           # Momentum12_2, STReversal
-    fundamental.py        # ROE, GrossProfitability, AccrualRatio, AssetGrowth, EarningsYield
-    risk.py               # IdiosyncraticVol
-  signals/
-    base.py               # Signal re-export
-    registry.py           # SignalRegistry (auto-discovery, config-driven)
-    zscore.py             # Winsorize + cross-sectional z-score
-    neutralize.py         # Cross-sectional OLS neutralization
-    combine.py            # EW, IC-weighted, Ridge, ElasticNet, XGBoost
-    report_card.py        # Per-signal diagnostics (IC, decay, turnover, marginal IC)
-  ml/
-    purged_cv.py          # Purged k-fold CV with embargo
-    models.py             # AlphaModel (Ridge, ElasticNet, XGBoost), ml_combine()
-  portfolio/
-    covariance.py         # Ledoit-Wolf, nearest PSD
-    risk_model.py         # Factor model covariance (B @ F @ B' + D)
-    construction.py       # Alpha → target weights
-    optimization.py       # Constrained L/S optimizer (cvxpy)
-    backtest.py           # Walk-forward backtest engine
-  analytics/
-    performance.py        # Sharpe, Sortino, Calmar, max DD
-    risk.py               # VaR, CVaR, Cornish-Fisher
-    statistical_tests.py  # DM test, JK Sharpe equality
-    ic.py                 # IC series, IC summary, IC decay
-    attribution.py        # FF factor attribution
-    bootstrap.py          # Block bootstrap for CIs
+  config.py                    # PipelineConfig dataclasses
+  data/                        # DataPanel, sectors, French factors, cleaner
+  factors/                     # Hand-picked signals (momentum, fundamental, risk)
+    mined/                     # Auto-generated signals from mining machine
+  signals/                     # Registry, z-score, neutralize, combine, report card
+  mining/                      # Signal mining machine
+    enumeration.py             # Generate candidate specs (770)
+    transforms.py              # Transform library (16 types)
+    compute.py                 # Compute candidates with pivot cache
+    evaluate.py                # IC evaluation (GPU batch + CPU turnover/spread)
+    filter.py                  # Quality threshold filtering
+    deduplicate.py             # Correlation-based dedup
+    stepwise.py                # Forward stepwise portfolio selection
+    codegen.py                 # Generate Factor .py files for survivors
+    runner.py                  # Mining orchestrator
+    config.py                  # Mining thresholds and field classifications
+  gpu/                         # GPU acceleration
+    backend.py                 # CuPy/numpy abstraction (fallback if no GPU)
+    ic_batch.py                # Batched IC computation on GPU
+    neutralize_batch.py        # Projection matrix cache for fast neutralization
+  ml/                          # ML extension (Ridge, ElasticNet, XGBoost)
+    purged_cv.py               # Purged k-fold CV with embargo
+    models.py                  # AlphaModel wrappers + ml_combine()
+  portfolio/                   # Portfolio construction
+    covariance.py              # Ledoit-Wolf shrinkage
+    risk_model.py              # Factor model covariance (B @ F @ B' + D)
+    construction.py            # Alpha → target weights
+    optimization.py            # Constrained L/S optimizer (cvxpy)
+    backtest.py                # Walk-forward backtest engine
+  analytics/                   # Evaluation
+    ic.py                      # IC computation (CPU version)
+    performance.py             # Sharpe, Sortino, Calmar, max DD
+    risk.py                    # VaR, CVaR, Cornish-Fisher
+    attribution.py             # FF factor attribution (Newey-West HAC)
+    bootstrap.py               # Block bootstrap for CIs
+    statistical_tests.py       # DM test, JK Sharpe equality
+  utils/
+    logger.py                  # PipelineLogger (file logging + desktop notifications)
 ```
 
 ## Known Issues
-- Sector mapping only 37.5% coverage — many historical S&P 500 constituents no longer on EDGAR
-- Windows Python segfault risk with numpy/pandas C extensions (same as existing project)
-- pandas-datareader FutureWarning on date_parser (cosmetic, doesn't affect results)
-- OOS period (2015-2019) only 60 months — bootstrap CI is wide
+- Sector mapping 37.5% coverage (historical/delisted tickers → "Other")
+- GPU IC uses date intersection across signals → slightly fewer months than CPU
+- Constrained optimizer not yet integrated into Step 9 final evaluation
+- OOS period only 60 months → wide bootstrap CIs
