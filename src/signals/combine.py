@@ -85,6 +85,52 @@ def ic_weighted_combine(
     return composite
 
 
+def inverse_vol_combine(
+    signals: dict[str, pd.DataFrame],
+    returns: pd.DataFrame,
+    universe: pd.DataFrame,
+    lookback: int = 36,
+) -> pd.DataFrame:
+    """Inverse-volatility-weighted signal combination.
+
+    Weight each signal by 1 / std(IC) — more weight to signals with
+    more consistent (less volatile) predictive power.
+    """
+    aligned = _align_signals(signals)
+    dates = list(aligned.values())[0].index
+    columns = list(aligned.values())[0].columns
+
+    ic_series = {}
+    for name, sig in aligned.items():
+        ic_series[name] = compute_ic_series(sig, returns, universe)
+
+    composite = pd.DataFrame(0.0, index=dates, columns=columns)
+
+    for t_idx, t in enumerate(dates):
+        weights = {}
+        for name, ic in ic_series.items():
+            trailing = ic[ic.index < t]
+            if len(trailing) < 12:
+                weights[name] = 1.0
+                continue
+            recent = trailing.iloc[-lookback:] if len(trailing) > lookback else trailing
+            ic_std = recent.std()
+            weights[name] = 1.0 / ic_std if ic_std > 0.01 else 1.0
+
+        total = sum(weights.values())
+        if total <= 0:
+            total = len(weights)
+            weights = {k: 1.0 / total for k in weights}
+        else:
+            weights = {k: v / total for k, v in weights.items()}
+
+        for name, w in weights.items():
+            if w > 0 and t in aligned[name].index:
+                composite.loc[t] += w * aligned[name].loc[t].fillna(0)
+
+    return composite
+
+
 def combine_signals(
     signals: dict[str, pd.DataFrame],
     method: str = "equal",
@@ -98,10 +144,10 @@ def combine_signals(
 
     Args:
         signals: dict mapping signal name -> (date x gvkey) neutralized z-scores
-        method: "equal", "ic_weighted", "ridge", "elastic_net", or "xgboost"
-        returns: required for ic_weighted and ML methods
-        universe: required for ic_weighted and ML methods
-        lookback: IC lookback window for ic_weighted
+        method: "equal", "ic_weighted", "inverse_vol", "ridge", "elastic_net", or "xgboost"
+        returns: required for ic_weighted, inverse_vol, and ML methods
+        universe: required for ic_weighted, inverse_vol, and ML methods
+        lookback: IC lookback window for ic_weighted / inverse_vol
         train_window: training window for ML methods
         purge_gap: purge gap for ML methods
     """
@@ -111,6 +157,10 @@ def combine_signals(
         if returns is None or universe is None:
             raise ValueError("ic_weighted requires returns and universe DataFrames")
         return ic_weighted_combine(signals, returns, universe, lookback=lookback)
+    elif method == "inverse_vol":
+        if returns is None or universe is None:
+            raise ValueError("inverse_vol requires returns and universe DataFrames")
+        return inverse_vol_combine(signals, returns, universe, lookback=lookback)
     elif method in ("ridge", "elastic_net", "xgboost"):
         if returns is None or universe is None:
             raise ValueError(f"{method} requires returns and universe DataFrames")
