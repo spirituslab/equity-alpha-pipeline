@@ -10,20 +10,6 @@ We built a systematic alpha research pipeline that discovers, evaluates, and com
 
 The OOS period (2015-2019) is never used for any selection decision — it is purely for final evaluation.
 
-**Final result (Optimizer + Equal-Weight):**
-
-| Metric | Value |
-|--------|-------|
-| Signals selected | 3 (all cash-flow quality) |
-| Pre-OOS Sharpe (1975-2014) | **1.64** |
-| OOS Sharpe (2015-2019) | **0.46** |
-| FF Alpha (annualized) | **7.5%** |
-| Alpha t-statistic (Newey-West HAC) | **5.64** |
-| Max Drawdown | -15.2% |
-| Candidates enumerated | 770 |
-| Candidates surviving all filters | 27 |
-| Total pipeline runtime | 38 minutes |
-
 ---
 
 ## 1. System Architecture
