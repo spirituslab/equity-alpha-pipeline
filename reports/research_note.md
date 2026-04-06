@@ -338,7 +338,49 @@ Individual signal quality (IC) does not predict portfolio performance:
 
 The difference is 2.5× Sharpe. Signals interact — a signal with moderate IC but low correlation to existing signals adds more portfolio value than a high-IC signal that overlaps with what's already there.
 
-### 6.2 The Algorithm
+### 6.2 The Algorithm — Worked Example
+
+Suppose 54 candidate signals survive pre-selection. The algorithm works as follows:
+
+**Step 1 — Test each signal alone (54 backtests):**
+```
+Try signal A alone → backtest 541 months → Sharpe 0.85
+Try signal B alone → backtest 541 months → Sharpe 1.07  ← best
+Try signal C alone → backtest 541 months → Sharpe 0.62
+... (test all 54)
+
+Winner: signal B (oancfy_div_seqq, Sharpe 1.07)
+Selected set: [B]
+```
+
+**Step 2 — Test B + each of the remaining 53 (53 backtests):**
+```
+Try B + A → combine, backtest → Sharpe 1.20
+Try B + C → combine, backtest → Sharpe 0.95
+Try B + D → combine, backtest → Sharpe 1.40  ← best
+... (test all 53)
+
+Winner: B + D (added ibcomq_to_mktcap, Sharpe 1.40)
+Selected set: [B, D]
+```
+
+**Step 3 — Test B + D + each of the remaining 52 (52 backtests):**
+```
+Try B + D + A → combine, backtest → Sharpe 1.35
+Try B + D + C → combine, backtest → Sharpe 1.49  ← best
+... (test all 52)
+
+Winner: B + D + C (added oancfy_to_mktcap, Sharpe 1.49)
+Selected set: [B, D, C]
+```
+
+**...continues until adding any remaining signal improves Sharpe by less than 0.01...**
+
+**Step 7 — Test all remaining → best improvement is -0.05 → stop.**
+
+Each addition is evaluated in the context of what's already selected. Signal D is chosen at step 2 not because it has the highest individual IC, but because it adds the most value *on top of signal B*. This is why portfolio-level testing finds different (and better) answers than individual signal ranking.
+
+The formal algorithm:
 
 ```
 selected = []
