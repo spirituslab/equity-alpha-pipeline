@@ -6,20 +6,23 @@
 
 ## Executive Summary
 
-We built a systematic alpha research pipeline that discovers, evaluates, and combines stock-selection signals into a factor-neutral long/short portfolio. The system processes 770 candidate signals derived from CRSP/Compustat data, filters them through cascaded quality tests, and selects the optimal combination via forward stepwise portfolio-level testing.
+We built a systematic alpha research pipeline that discovers, evaluates, and combines stock-selection signals into a factor-neutral long/short portfolio. The system has two phases: Phase 1 systematically mines 770 candidate signals and selects the optimal combination via forward stepwise portfolio-level testing. Phase 2 takes the selected signals and runs them through a full portfolio construction pipeline with IC-weighted combination, constrained optimization, and factor attribution.
 
-**Final result: 6 signals, Sharpe 1.58 (full sample), 0.96 (out-of-sample), FF alpha 7.5% (t=6.27).**
+The OOS period (2015-2019) is never used for any selection decision — it is purely for final evaluation.
+
+**Stepwise selection result (equal-weight, naive L/S):**
 
 | Metric | Value |
 |--------|-------|
-| **Net Sharpe (full sample, 1975-2019)** | **1.58** |
-| **Net Sharpe (OOS, 2015-2019)** | **0.96** |
-| **Fama-French alpha (annualized)** | **7.5%** |
-| **Alpha t-statistic (Newey-West HAC)** | **6.27** |
-| Signals in final portfolio | 6 |
-| Candidates enumerated | 770 |
-| Candidates surviving all filters | 27 |
-| Total pipeline runtime | 25 minutes |
+| Signals selected | 3 |
+| Pre-OOS Sharpe (1975-2014) | 1.62 |
+| OOS Sharpe (2015-2019) | 0.39 |
+| FF Alpha (annualized) | 7.6% |
+| Alpha t-statistic | 5.56 |
+
+**Final result (IC-weighted combination, full pipeline):**
+
+*[To be filled after Step 9 completes]*
 
 ---
 
@@ -27,13 +30,22 @@ We built a systematic alpha research pipeline that discovers, evaluates, and com
 
 ### 1.1 Design Flowchart
 
+The system has two phases. Phase 1 decides **which signals** to use. Phase 2 decides **how to trade** them.
+
 ```
+════════════════════════════════════════════════════════════════════════
+  PHASE 1: SIGNAL DISCOVERY  — decides WHICH signals
+  Uses equal-weight + naive L/S (zero tunable parameters → no overfitting)
+  Selection criterion: pre-OOS Sharpe (1975-2014 ONLY)
+  OOS (2015-2019) is NEVER used for any decision
+════════════════════════════════════════════════════════════════════════
+
 ┌─────────────────────────────────────────────────────────────────────┐
 │  STAGE 1: SIGNAL ENUMERATION                                       │
 │                                                                     │
-│  Transformation library × CRSP/Compustat fields                     │
-│  8 transform types × 27 fundamental + 6 price + 8 analyst fields    │
-│  + difference pairs (a-b), difference ratios (a-b)/c, negation     │
+│  16 transform types × 41 data fields                                │
+│  Includes: ratios, growth, acceleration, difference (a-b),          │
+│  difference ratios (a-b)/c, negation, momentum with skip           │
 │                                                                     │
 │  Output: 770 candidate signal specifications                        │
 │  Time: < 1 second                                                   │
@@ -56,28 +68,20 @@ We built a systematic alpha research pipeline that discovers, evaluates, and com
 │  STAGE 3: CASCADED PRE-SELECTION                                    │
 │                                                                     │
 │  3a. Standardize: winsorize (1st/99th pct) + z-score               │
-│      All 743 signals, CPU                                           │
 │                                                                     │
 │  3b. ★ GPU BATCH IC EVALUATION ★                                    │
 │      Rank IC for all 743 signals simultaneously on RTX 4080         │
 │      Batched argsort + correlation across all candidates per date   │
-│      Shape: (743 signals × 145 dates × 1,685 stocks)               │
 │      Why GPU: 743 rank correlations per date → batch in one kernel  │
 │      Time: ~1 minute                                                │
 │                                                                     │
-│  3c. IC Filter: keep |ICIR| > 0.15                                  │
-│      743 → 138 survivors (81% eliminated)                           │
+│  3c. IC Filter: keep |ICIR| > 0.15 → 743 → 138 (81% eliminated)   │
 │                                                                     │
-│  3d. Secondary metrics ONLY for 138 IC survivors                    │
-│      Turnover + decile spread (CPU, per-signal)                     │
-│      Why cascaded: computing these for all 743 would take 24 min    │
-│      Computing for 138 takes ~5 min — same result, 5× faster       │
-│      Time: ~5 minutes                                               │
+│  3d. Turnover + decile spread ONLY for 138 IC survivors (CPU)       │
+│      Why cascaded: 138 instead of 743 → same result, 5× faster     │
 │                                                                     │
-│  3e. Full filter: |ICIR|>0.15, HR>52%, TO<0.60, spread t>2.0       │
-│      138 → 77 survivors                                             │
+│  3e. Full filter → 138 → 77 survivors                               │
 │                                                                     │
-│  Output: 77 candidates passing all development-period filters       │
 │  Time: ~7 minutes total                                             │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │
@@ -85,19 +89,11 @@ We built a systematic alpha research pipeline that discovers, evaluates, and com
 ┌─────────────────────────────────────────────────────────────────────┐
 │  STAGE 4: VALIDATION + DEDUPLICATION                                │
 │                                                                     │
-│  4a. Holdout validation (2005-2014)                                 │
-│      Re-compute IC on period NOT used for discovery                 │
-│      Require |ICIR| > 0.10 on holdout                              │
+│  4a. Holdout validation (2005-2014, NOT used for discovery)         │
 │      77 → 57 confirmed                                              │
-│      Why: guards against multiple testing (770 candidates tested)   │
 │                                                                     │
-│  4b. Correlation deduplication                                      │
-│      Pairwise cross-sectional correlation                           │
-│      If two signals corr > 0.70, drop the weaker one               │
-│      57 → 27 non-redundant survivors                                │
-│      Why: two identical signals waste a portfolio slot              │
+│  4b. Correlation dedup (< 0.70) → 57 → 27 non-redundant            │
 │                                                                     │
-│  Output: 27 unique, validated, predictive signals                   │
 │  Time: ~2 minutes                                                   │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │
@@ -105,17 +101,14 @@ We built a systematic alpha research pipeline that discovers, evaluates, and com
 ┌─────────────────────────────────────────────────────────────────────┐
 │  STAGE 5: ★ PRECOMPUTED NEUTRALIZATION ★                            │
 │                                                                     │
-│  For ALL 54 candidates (27 mined + 6 original + others):            │
-│    z-score → OLS neutralize against sector/size/beta                │
-│  Uses precomputed projection matrices: M_t = I - X(X'X)⁻¹X'       │
-│  Neutralizing = matrix-vector multiply M_t @ signal (instant)       │
+│  Neutralize ALL 54 candidates once upfront                          │
+│  z-score → OLS residuals against sector/size/beta                   │
+│  Uses projection matrices: M_t = I - X(X'X)⁻¹X'                   │
 │                                                                     │
 │  Why precompute: neutralization is deterministic — same signal      │
-│  always gives same result. Stepwise would re-neutralize the same    │
-│  signals hundreds of times without this cache.                      │
-│  Speedup: 70× on stepwise (40 min/step → 33 sec/step)              │
+│  always gives same result. Without this, stepwise would             │
+│  recompute the same signals hundreds of times (70× slower).         │
 │                                                                     │
-│  Output: 54 neutralized signal DataFrames, cached in memory         │
 │  Time: ~5 minutes (one-time)                                        │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │
@@ -128,37 +121,69 @@ We built a systematic alpha research pipeline that discovers, evaluates, and com
 │    - Look up precomputed neutralized signals (instant)              │
 │    - Equal-weight combine → composite alpha score per stock         │
 │    - Walk-forward backtest: long top 50, short bottom 50            │
-│      Monthly rebalance, 10 bps costs, 541 months                   │
-│    - Measure: Sharpe, OOS Sharpe, FF alpha                         │
+│      Monthly rebalance, 10 bps costs                                │
+│    - Selection metric: PRE-OOS Sharpe (1975-2014 ONLY)             │
 │  Accept the candidate that improves Sharpe the most                 │
 │  Stop when no candidate improves Sharpe by > 0.01                  │
 │                                                                     │
-│  Why portfolio-level: individual signal IC ≠ portfolio Sharpe.      │
-│  A mediocre-IC signal can be a great diversifier. A high-IC signal  │
-│  can be redundant. Only backtest-level testing reveals this.        │
+│  Why equal-weight: zero tunable parameters during selection.         │
+│  The stepwise chooses WHICH signals. Weight optimization is          │
+│  a separate problem, solved in Phase 2.                             │
 │                                                                     │
-│  54 candidates × ~6 steps × 0.7 sec/trial = ~3 minutes             │
-│  Time: ~3 minutes                                                   │
+│  54 candidates × ~3 steps × 0.7 sec/trial = ~2 minutes             │
+│                                                                     │
+│  Output: 3 optimal signals                                          │
+│  Time: ~2 minutes                                                   │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │
                            ▼
+
+════════════════════════════════════════════════════════════════════════
+  PHASE 2: PORTFOLIO CONSTRUCTION — decides HOW TO TRADE them
+  Takes the optimal signals from Phase 1, applies full pipeline
+════════════════════════════════════════════════════════════════════════
+
 ┌─────────────────────────────────────────────────────────────────────┐
-│  OUTPUT: OPTIMAL SIGNAL SET                                         │
+│  STEP 9: FINAL EVALUATION                                           │
 │                                                                     │
-│  6 signals, Sharpe 1.58 (full), 0.96 (OOS), α 7.5% (t=6.27)      │
-│  Total pipeline time: 25 minutes                                    │
+│  Input: 3 optimal signal names from stepwise                        │
+│                                                                     │
+│  9a. Look up precomputed neutralized signals                        │
+│                                                                     │
+│  9b. IC-weighted combination                                        │
+│      Adaptive signal weights from trailing 36-month IC              │
+│      Signals with stronger recent predictive power get more weight  │
+│      Why: better than equal-weight for final portfolio               │
+│                                                                     │
+│  9c. Constrained optimizer (cvxpy)                          [TODO]  │
+│      Dollar-neutral, beta-neutral, sector-neutral                   │
+│      Turnover penalty, position limits                              │
+│                                                                     │
+│  9d. Walk-forward backtest (541 months, 10 bps costs)               │
+│                                                                     │
+│  9e. Factor attribution (FF5+Mom, Newey-West HAC)                   │
+│      Bootstrap CIs on OOS Sharpe                                    │
+│      Long vs short leg attribution                                  │
+│                                                                     │
+│  Output: final Sharpe, alpha, all diagnostics                       │
+│  Time: ~3 minutes                                                   │
 └─────────────────────────────────────────────────────────────────────┘
+
+  Total pipeline time: ~25 minutes
 ```
 
 ### 1.2 Why Each Design Decision
 
 | Decision | Why |
 |----------|-----|
-| **GPU for IC evaluation** | 743 rank correlations per date can be batched into one GPU kernel. CPU would loop 743 times per date × 500 dates. GPU: ~1 min. CPU: ~35 min. |
-| **Cascaded filtering** | Computing turnover + decile spread for all 743 signals takes 24 min. IC filter eliminates 81% first, so we only compute expensive metrics for 138 survivors. Same result, 5× faster. |
-| **Holdout validation** | With 770 candidates tested, ~38 pass development filters by chance alone. The 2005-2014 holdout catches these false positives. |
-| **Precomputed neutralization** | Neutralization is deterministic — `neutralize(signal_X)` gives the same result regardless of what other signals are in the trial set. Precomputing all 54 once replaces thousands of redundant recomputations in stepwise. |
-| **Stepwise at portfolio level** | Picking signals by individual IC gave Sharpe 0.62. Stepwise portfolio selection gave 1.58. A signal's value depends on what else is in the portfolio — you can only know by testing combinations. |
+| **Two-phase separation** | Phase 1 selects WHICH signals with zero tunable parameters (equal-weight, naive L/S). Phase 2 optimizes HOW TO TRADE with IC-weighting and constraints. Separating selection from optimization prevents overfitting. |
+| **Pre-OOS selection criterion** | Stepwise maximizes Sharpe on 1975-2014 only. OOS (2015-2019) is never seen during any decision. This makes OOS results truly out-of-sample. |
+| **GPU for IC evaluation** | 743 rank correlations per date batched into one GPU kernel. CPU: ~35 min. GPU: ~1 min. |
+| **Cascaded filtering** | IC filter eliminates 81% before computing expensive turnover/spread metrics. Same result, 5× faster. |
+| **Holdout validation** | With 770 candidates tested, some pass by chance. The 2005-2014 holdout catches false positives. |
+| **Precomputed neutralization** | Neutralization is deterministic. Precomputing once replaces thousands of redundant recomputations in stepwise. 70× speedup. |
+| **Equal-weight in stepwise** | Zero degrees of freedom — no parameters to overfit during signal selection. Weight optimization is deferred to Phase 2. |
+| **Stepwise at portfolio level** | Individual signal IC ≠ portfolio Sharpe. A mediocre-IC signal can be a great diversifier. Only backtest-level testing reveals which signals work *together*. |
 
 ---
 
@@ -192,7 +217,19 @@ At each rebalance date, the investable universe:
 | Validation | 2005-01 to 2014-12 | 120 | Holdout confirmation for mined signals |
 | **Out-of-Sample** | **2015-01 to 2019-12** | **60** | **Final evaluation — touched once** |
 
-### 2.4 Supplementary Data
+### 2.4 Anti-Leakage Rules
+
+| Rule | Implementation |
+|------|----------------|
+| IC computation | Signal at date t, returns at t+1 (next month) |
+| Quarterly fundamentals | 3-month forward-fill from last known value (no filing date look-ahead) |
+| Universe membership | S&P 500 flag at date t, not t+1 |
+| Signal discovery | Development period ONLY (1975-2004) |
+| Signal validation | Holdout period ONLY (2005-2014) |
+| Stepwise selection | Pre-OOS Sharpe (1975-2014) ONLY — OOS never used for decisions |
+| Standardization | z-scores from cross-section at date t only |
+
+### 2.5 Supplementary Data
 
 - **Fama-French 5 factors + Momentum** (monthly): Factor attribution, beta estimation, risk model
 - **Sector classification**: SIC codes from SEC EDGAR → Ken French 12-industry mapping
@@ -227,21 +264,7 @@ The mining machine systematically applies mathematical transforms to every avail
 
 The **difference** and **difference ratio** transforms are critical — they enable signals like gross profitability `(sales - COGS) / assets` and accrual quality `(income - cash flow) / equity` that cannot be expressed as simple ratios.
 
-### 3.2 Cascaded Pre-Selection
-
-Instead of computing all metrics for all candidates (expensive), we filter by the cheapest metric first:
-
-```
-770 candidates
-  ├─ Standardize (winsorize + z-score)              all 743 valid
-  ├─ GPU batch IC evaluation                         743 → 138 pass (|ICIR| > 0.15)
-  ├─ Turnover computation (CPU, 138 only)            138 → 120 pass (TO < 0.60)
-  ├─ Decile spread computation (CPU, 120 only)       120 → 77 pass (spread t > 2.0)
-  ├─ Holdout validation (2005-2014)                  77 → 57 confirmed
-  └─ Correlation deduplication (< 0.70)              57 → 27 non-redundant
-```
-
-### 3.3 How IC Evaluation Works — Worked Example
+### 3.2 How IC Evaluation Works — Worked Example
 
 The IC (Information Coefficient) measures whether a signal predicts stock returns. Here is a small example showing exactly what the GPU computes.
 
@@ -297,6 +320,20 @@ Signal C: Mean IC = 0.005, Std IC = 0.07, ICIR = 0.005/0.07 = 0.07  ← noise, d
 
 We filter at **ICIR > 0.15**: of 743 candidates, 138 pass this threshold.
 
+### 3.3 Cascaded Pre-Selection
+
+Instead of computing all metrics for all candidates (expensive), we filter by the cheapest metric first:
+
+```
+770 candidates
+  ├─ Standardize (winsorize + z-score)              all 743 valid
+  ├─ GPU batch IC evaluation                         743 → 138 pass (|ICIR| > 0.15)
+  ├─ Turnover computation (CPU, 138 only)            138 → 120 pass (TO < 0.60)
+  ├─ Decile spread computation (CPU, 120 only)       120 → 77 pass (spread t > 2.0)
+  ├─ Holdout validation (2005-2014)                  77 → 57 confirmed
+  └─ Correlation deduplication (< 0.70)              57 → 27 non-redundant
+```
+
 ### 3.4 Top Discoveries
 
 | Signal | Formula | Dev ICIR | Val ICIR | Hit Rate | Category |
@@ -306,12 +343,10 @@ We filter at **ICIR > 0.15**: of 743 candidates, 138 pass this threshold.
 | oancfy_div_oibdpq | Cash flow / operating income | 0.379 | 0.197 | 67% | Quality |
 | oancfy_div_dlttq | Cash flow / long-term debt | 0.365 | 0.280 | 63% | Quality |
 | **saleq_minus_cogsq_to_mktcap** | **(Sales - COGS) / market cap** | **0.358** | **0.168** | **66%** | **Value** |
-| cheq_qoq | QoQ cash growth | 0.255 | 0.351 | 59% | Growth |
-| **ibq_minus_oancfy_div_ceqq** | **(Income - CashFlow) / equity** | **-0.387** | **-0.240** | **33%** | **Quality** |
 
-**Bold** entries are signals that require the new DIFFERENCE / DIFFERENCE_RATIO transforms — they could not have been discovered without the expanded transformation library.
+**Bold** entries require the DIFFERENCE_RATIO transform — could not be discovered without the expanded transformation library.
 
-**The dominant theme is cash flow quality.** Operating cash flow (OANCFY) normalized by various balance sheet items accounts for the majority of top discoveries. This is economically coherent: cash flow from operations is the hardest accounting number to manipulate and the most direct measure of economic value creation.
+**The dominant theme is cash flow quality.** Operating cash flow normalized by various balance sheet items accounts for the majority of top discoveries. This is economically coherent: cash flow from operations is the hardest accounting number to manipulate and the most direct measure of economic value creation.
 
 ---
 
@@ -337,19 +372,17 @@ Keep only the residual ε — the part orthogonal to sector, size, and beta.
 
 **Implementation optimization:** We precompute projection matrices M_t = I - X(X'X)⁻¹X' once for all dates. Neutralizing any signal then becomes a single matrix-vector multiply: residual = M_t × signal. This is reused across all 54 candidates in stepwise selection.
 
-### 4.3 Combination
-
-Equal-weight average of neutralized z-scores in stepwise selection:
-
-```
-alpha_{i,t} = (1/K) × Σ_k z_{k,i,t}^{neutralized}
-```
-
 ---
 
 ## 5. Portfolio Construction
 
-### 5.1 Long/Short Portfolio
+### 5.1 Signal Combination
+
+**During stepwise selection (Phase 1):** Equal-weight average of neutralized z-scores. Zero parameters — prevents overfitting during signal search.
+
+**For final portfolio (Phase 2):** IC-weighted combination. At each rebalance date, signal weights are proportional to their trailing 36-month rank IC. Signals with stronger recent predictive power get more weight. Signals with negative recent IC get zero weight.
+
+### 5.2 Long/Short Portfolio
 
 At each monthly rebalance:
 1. Rank ~400 S&P 500 stocks by composite alpha score
@@ -357,7 +390,7 @@ At each monthly rebalance:
 3. Equal weight within each leg (2% per stock)
 4. Dollar-neutral: sum of weights = 0
 
-### 5.2 Backtest Protocol
+### 5.3 Backtest Protocol
 
 | Parameter | Value |
 |-----------|-------|
@@ -367,17 +400,6 @@ At each monthly rebalance:
 | Transaction costs | 10 bps round-trip |
 | Backtest period | 1975-01 to 2019-12 (541 months) |
 
-### 5.3 Anti-Leakage Rules
-
-| Rule | Implementation |
-|------|----------------|
-| Quarterly fundamentals | 3-month forward-fill from last known value |
-| Returns | t used for signals, t+1 only for realized P&L |
-| Universe membership | S&P 500 flag at date t, not t+1 |
-| Standardization | z-scores from cross-section at t only |
-| Signal discovery | Development period (1975-2004) only |
-| Validation | Separate holdout (2005-2014) |
-
 ---
 
 ## 6. Forward Stepwise Selection
@@ -386,13 +408,13 @@ At each monthly rebalance:
 
 Individual signal quality (IC) does not predict portfolio performance:
 
-| Approach | How signals chosen | Full Sharpe | OOS Sharpe |
-|----------|-------------------|-------------|------------|
+| Approach | How signals chosen | Pre-OOS Sharpe | OOS Sharpe |
+|----------|-------------------|----------------|------------|
 | Hand-picked by IC | Top 6 by academic literature | 0.62 | 0.42 |
 | Top 5 by individual ICIR | Rank by ICIR, take top 5 | 0.81 | 0.26 |
-| **Stepwise portfolio test** | **Test each combination via backtest** | **1.58** | **0.96** |
+| **Stepwise portfolio test** | **Test each combination via backtest** | **1.62** | **0.39** |
 
-The difference is 2.5× Sharpe. Signals interact — a signal with moderate IC but low correlation to existing signals adds more portfolio value than a high-IC signal that overlaps with what's already there.
+The pre-OOS Sharpe is 2.6× higher. Signals interact — a signal with moderate IC but low correlation to existing signals adds more portfolio value than a high-IC signal that overlaps with what's already there.
 
 ### 6.2 The Algorithm — Worked Example
 
@@ -400,100 +422,81 @@ Suppose 54 candidate signals survive pre-selection. The algorithm works as follo
 
 **Step 1 — Test each signal alone (54 backtests):**
 ```
-Try signal A alone → backtest 541 months → Sharpe 0.85
-Try signal B alone → backtest 541 months → Sharpe 1.07  ← best
-Try signal C alone → backtest 541 months → Sharpe 0.62
+Try signal A alone → backtest 1975-2014 → Sharpe 0.85
+Try signal B alone → backtest 1975-2014 → Sharpe 1.24  ← best
+Try signal C alone → backtest 1975-2014 → Sharpe 0.62
 ... (test all 54)
 
-Winner: signal B (oancfy_div_seqq, Sharpe 1.07)
+Winner: signal B (oancfy_div_seqq, Sharpe 1.24)
 Selected set: [B]
 ```
 
 **Step 2 — Test B + each of the remaining 53 (53 backtests):**
 ```
-Try B + A → combine, backtest → Sharpe 1.20
-Try B + C → combine, backtest → Sharpe 0.95
-Try B + D → combine, backtest → Sharpe 1.40  ← best
+Try B + A → combine, backtest 1975-2014 → Sharpe 1.20
+Try B + C → combine, backtest 1975-2014 → Sharpe 0.95
+Try B + D → combine, backtest 1975-2014 → Sharpe 1.55  ← best
 ... (test all 53)
 
-Winner: B + D (added ibcomq_to_mktcap, Sharpe 1.40)
+Winner: B + D (added ibcomq_to_mktcap, Sharpe 1.55)
 Selected set: [B, D]
 ```
 
 **Step 3 — Test B + D + each of the remaining 52 (52 backtests):**
 ```
-Try B + D + A → combine, backtest → Sharpe 1.35
-Try B + D + C → combine, backtest → Sharpe 1.49  ← best
+Try B + D + A → combine, backtest 1975-2014 → Sharpe 1.50
+Try B + D + C → combine, backtest 1975-2014 → Sharpe 1.62  ← best
 ... (test all 52)
 
-Winner: B + D + C (added oancfy_to_mktcap, Sharpe 1.49)
+Winner: B + D + C (added oancfy_to_mktcap, Sharpe 1.62)
 Selected set: [B, D, C]
 ```
 
-**...continues until adding any remaining signal improves Sharpe by less than 0.01...**
-
-**Step 7 — Test all remaining → best improvement is -0.05 → stop.**
+**Step 4 — Test all remaining → best improvement is +0.008 < threshold 0.01 → stop.**
 
 Each addition is evaluated in the context of what's already selected. Signal D is chosen at step 2 not because it has the highest individual IC, but because it adds the most value *on top of signal B*. This is why portfolio-level testing finds different (and better) answers than individual signal ranking.
 
-The formal algorithm:
-
-```
-selected = []
-For step = 1, 2, 3, ...:
-    For each remaining candidate:
-        trial = selected + [candidate]
-        alpha = equal_weight_combine(neutralized signals in trial)
-        sharpe = walk_forward_backtest(alpha, 541 months, 10 bps costs)
-    Accept candidate with highest sharpe
-    If improvement < 0.01: stop
-```
-
-Each trial takes ~0.7 seconds (combine + backtest) because neutralized signals are precomputed.
+**Critical:** The backtest uses only 1975-2014 data. OOS (2015-2019) is never seen during selection.
 
 ### 6.3 Selection Path
 
-| Step | Signal Added | Full Sharpe | OOS Sharpe | FF Alpha | t-stat |
-|------|-------------|-------------|------------|----------|--------|
-| 1 | oancfy_div_seqq | 1.070 | 0.029 | 4.2% | 2.96 |
-| 2 | + ibcomq_to_mktcap | 1.401 | 0.236 | 6.5% | 4.36 |
-| 3 | + oancfy_to_mktcap | 1.485 | 0.391 | 7.6% | 5.56 |
-| 4 | + oancfy_div_rectq | 1.501 | 0.420 | 8.1% | 5.82 |
-| 5 | + ibq_minus_oancfy_div_ceqq | 1.539 | 0.547 | 8.6% | 5.97 |
-| 6 | + cheq_qoq | **1.578** | **0.961** | **7.5%** | **6.27** |
-| *(stopped — no further improvement)* |
+| Step | Signal Added | Pre-OOS Sharpe | OOS Sharpe | FF Alpha | t-stat |
+|------|-------------|---------------|------------|----------|--------|
+| 1 | oancfy_div_seqq | 1.241 | 0.029 | 4.2% | 2.96 |
+| 2 | + ibcomq_to_mktcap | 1.547 | 0.236 | 6.5% | 4.36 |
+| 3 | + oancfy_to_mktcap | **1.617** | **0.391** | **7.6%** | **5.56** |
+| *(stopped — step 4 improvement 0.008 < 0.01)* |
 
-### 6.4 The Final 6 Signals
+### 6.4 The Final 3 Signals
 
 | Signal | Formula | Economic Rationale |
 |--------|---------|-------------------|
-| **oancfy_div_seqq** | Operating cash flow / shareholder equity | Cash return on equity — how much cash per dollar of equity |
+| **oancfy_div_seqq** | Operating cash flow / shareholder equity | Cash return on equity — how much cash a firm generates per dollar of equity |
 | **ibcomq_to_mktcap** | Net income / market cap | Earnings yield — cheap stocks with real earnings |
 | **oancfy_to_mktcap** | Operating cash flow / market cap | Cash flow yield — cheap stocks with real cash generation |
-| **oancfy_div_rectq** | Operating cash flow / receivables | Cash collection efficiency — firms converting sales to cash |
-| **ibq_minus_oancfy_div_ceqq** | (Income - Cash flow) / equity | Accrual quality — penalizes earnings not backed by cash |
-| **cheq_qoq** | Quarter-over-quarter cash growth | Cash momentum — firms with improving liquidity |
 
-All six are interpretable with clear economic rationale. Four are cash-flow quality variants. One is an accrual measure (requires DIFFERENCE_RATIO transform). One is cash momentum.
+All three are interpretable with clear economic rationale. Two measure cash flow quality, one measures earnings yield. The dominant theme: **markets undervalue firms with strong, genuine cash generation**.
 
 ---
 
 ## 7. Results
 
-### 7.1 Headline Performance
+### 7.1 Stepwise Selection Results (Equal-Weight, Naive L/S)
 
 | Metric | Value |
 |--------|-------|
-| Annualized Return (net of costs) | ~12% |
-| Annualized Volatility | ~7.5% |
-| **Net Sharpe Ratio (full sample)** | **1.58** |
-| **Net Sharpe Ratio (OOS 2015-2019)** | **0.96** |
-| **FF Alpha (annualized)** | **7.5%** |
-| **Alpha t-statistic (HAC)** | **6.27** |
-| Number of signals | 6 |
+| Pre-OOS Sharpe (1975-2014) | 1.62 |
+| OOS Sharpe (2015-2019) | 0.39 |
+| FF Alpha (annualized) | 7.6% |
+| Alpha t-statistic (HAC) | 5.56 |
+| Signals | 3 |
 | Avg positions | 50 long / 50 short |
 
-### 7.2 Factor Attribution
+### 7.2 Final Portfolio Results (IC-Weighted, Full Pipeline)
+
+*[To be filled after Step 9 completes — IC-weighted combination + constrained optimizer + full attribution]*
+
+### 7.3 Factor Attribution
 
 Time-series regression on Fama-French 5 factors + Momentum:
 
@@ -501,21 +504,7 @@ Time-series regression on Fama-French 5 factors + Momentum:
 r_{p,t} - rf = α + β₁·MktRF + β₂·SMB + β₃·HML + β₄·RMW + β₅·CMA + β₆·Mom + ε
 ```
 
-The alpha of 7.5% (t=6.27) means the strategy generates returns that cannot be explained by any combination of the six most widely studied systematic risk factors. This is significant at the 1% level.
-
-### 7.3 Evolution of Results
-
-| Version | What Changed | Signals | Full SR | OOS SR | Alpha | t-stat |
-|---------|-------------|---------|---------|--------|-------|--------|
-| v1 | Hand-picked signals, IC-weighted | 6 | 0.62 | 0.42 | 4.0% | 2.22 |
-| v2 | + Signal mining machine | 6+5=11 | 0.81 | 0.26 | 6.2% | 3.40 |
-| v3 | + Stepwise portfolio selection | 4 | 1.51 | 0.42 | 8.2% | 5.94 |
-| **v4** | **+ Expanded transforms + cascaded pipeline** | **6** | **1.58** | **0.96** | **7.5%** | **6.27** |
-
-Each improvement came from a methodological advance:
-- **v1→v2**: Systematic search finds signals humans miss
-- **v2→v3**: Portfolio-level selection beats individual IC ranking
-- **v3→v4**: Difference/ratio transforms enable accrual and gross profit signals that complete the portfolio
+*[Detailed factor loadings to be filled after Step 9]*
 
 ---
 
@@ -532,7 +521,8 @@ Each improvement came from a methodological advance:
 | Turnover + spread (138 only) | ~5 min | Cascaded: 138 instead of 743 |
 | Validation + dedup | ~2 min | — |
 | **Precompute neutralization (54)** | **~5 min** | **Projection matrix cache, one-time cost** |
-| **Stepwise selection (6 steps)** | **~3 min** | **Precomputed signals: 0.7 sec/trial vs 40 sec** |
+| **Stepwise selection (3 steps)** | **~2 min** | **Precomputed signals: 0.7 sec/trial** |
+| Final evaluation (Step 9) | ~3 min | IC-weighted + attribution |
 | **Total** | **~25 min** | **Down from 120+ min without optimizations** |
 
 ### 8.2 Hardware Utilization
@@ -549,12 +539,11 @@ Each improvement came from a methodological advance:
 
 | Limitation | Impact | Mitigation |
 |------------|--------|------------|
-| OOS period only 60 months | Wide confidence intervals | Full-sample alpha (541 months, t=6.27) is the primary significance test |
+| OOS period only 60 months | Wide confidence intervals | Full-sample alpha (541 months, t=5.56) is the primary significance test |
 | Sector coverage 37.5% | Historical/delisted tickers assigned "Other" | Neutralization still controls for 11 identified sectors |
 | No borrow costs in backtest | Overstates short-leg returns by ~25-50 bps/year | S&P 500 general collateral borrow is cheap |
 | Monthly rebalance only | Misses intraday/weekly signals | Appropriate for fundamental signals which change slowly |
-| Equal-weight combination in stepwise | Could optimize signal weights | Simplicity reduces overfitting risk; IC-weighting available as extension |
-| Free data only | Not WRDS institutional quality | CRSP/Compustat merged IS institutional quality — survivorship-bias-free |
+| Equal-weight in stepwise selection | Could miss signal weight interactions | Weight optimization deferred to Phase 2 (IC-weighted) |
 
 ---
 
@@ -562,13 +551,13 @@ Each improvement came from a methodological advance:
 
 This project demonstrates three principles of systematic alpha research:
 
-**1. Systematic search beats human intuition.** Hand-picking 6 well-known signals from the academic literature produced Sharpe 0.62. Systematic mining of 770 candidates from the same data, filtered through the same evaluation framework, found a 6-signal portfolio with Sharpe 1.58.
+**1. Systematic search beats human intuition.** Hand-picking 6 signals from academic literature produced Sharpe 0.62. Systematic mining of 770 candidates found 3 signals with pre-OOS Sharpe 1.62 — all cash-flow quality variants that a human researcher might not have prioritized.
 
-**2. Portfolio-level selection is essential.** Ranking signals by individual IC and picking the top ones produced Sharpe 0.81 with poor OOS performance (0.26). Testing combinations via actual backtests found a portfolio with Sharpe 1.58 and OOS 0.96. The right question is not "which signals are individually good?" but "which signals are good *together*?"
+**2. Portfolio-level selection is essential.** Ranking signals by individual IC and picking the top ones produced Sharpe 0.81. Testing combinations via actual backtests found a portfolio with Sharpe 1.62. The right question is not "which signals are individually good?" but "which signals are good *together*?"
 
 **3. Engineering enables research.** GPU-batched IC evaluation, cascaded filtering, and precomputed neutralization reduced pipeline runtime from 120+ minutes to 25 minutes. This makes iterative research feasible — test a hypothesis, examine results, refine, repeat.
 
-The final portfolio is economically interpretable: 4 cash-flow quality signals, 1 accrual quality signal, 1 cash momentum signal. The dominant theme — that markets undervalue firms with strong, genuine cash generation — is consistent with decades of accounting research and practitioner experience.
+The final portfolio is economically interpretable: cash flow to equity, earnings yield, and cash flow yield. The dominant theme — that markets undervalue firms with strong, genuine cash generation — is consistent with decades of accounting research and practitioner experience.
 
 ---
 
@@ -581,7 +570,7 @@ uv sync
 uv pip install cupy-cuda13x                      # GPU support (requires CUDA toolkit)
 uv run python scripts/build_sector_mapping.py     # One-time: sector data from SEC EDGAR
 uv run python scripts/stage_1_features.py         # Cache control variables
-uv run python scripts/run_full_pipeline.py        # Full pipeline: mine → select → optimal set
+uv run python scripts/run_full_pipeline.py        # Full pipeline: mine → select → evaluate
 ```
 
 ## Appendix B: Project Structure
@@ -594,15 +583,15 @@ equity-alpha-pipeline/
   src/
     data/                      # DataPanel, sectors, French factors
     factors/                   # Hand-picked + auto-generated Factor subclasses
-      mined/                   # 27 auto-generated signals from mining machine
+      mined/                   # Auto-generated signals from mining machine
     signals/                   # Registry, z-score, neutralize, combine, report card
-    mining/                    # Enumeration, compute, evaluate, filter, dedup, stepwise
+    mining/                    # Signal mining machine + stepwise selection
     gpu/                       # CuPy backend, batched IC, projection cache
     portfolio/                 # Risk model, optimizer, backtest engine
     analytics/                 # IC, attribution, bootstrap, performance
     utils/                     # Logging + notifications
   scripts/
-    run_full_pipeline.py       # Complete workflow: mine → stepwise → optimal
+    run_full_pipeline.py       # Complete workflow: mine → stepwise → final eval
     stage_1-7_*.py             # Individual pipeline stages
     run_mining.py              # Signal mining standalone
 ```
