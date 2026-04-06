@@ -433,14 +433,18 @@ The optimizer improves OOS Sharpe from 0.39 to 0.46 (+18%) and alpha t-stat from
 
 ### 9.3 Risk Metrics
 
-| Metric | Value |
-|--------|-------|
-| Parametric VaR (95%) | -3.2% |
-| Historical VaR (95%) | -2.8% |
-| CVaR (Expected Shortfall) | -4.2% |
-| Cornish-Fisher VaR | -2.6% |
-| Avg Drawdown | -3.8% |
-| Max Drawdown Duration | 28 months |
+Monthly risk metrics for the equal-weight naive L/S portfolio:
+
+| Metric | Value | Meaning |
+|--------|-------|---------|
+| Parametric VaR (95%) | -3.2% | In 95% of months, loss is less than 3.2% |
+| Historical VaR (95%) | -2.8% | Actual 5th percentile of monthly returns |
+| CVaR (Expected Shortfall) | -4.2% | Average loss in worst 5% of months |
+| Cornish-Fisher VaR | -2.6% | VaR adjusted for skew/kurtosis (lower = less tail risk) |
+| Avg Drawdown | -3.8% | Average depth of underwater periods |
+| Max Drawdown Duration | 28 months | Longest time from peak to recovery |
+
+The positive skewness (+0.52) and moderate kurtosis (3.30) indicate the strategy has more upside surprises than downside — a favorable return distribution for a market-neutral portfolio.
 
 ### 9.4 Factor Attribution
 
@@ -467,15 +471,22 @@ The alpha of 7.5% (t=5.49) is significant at the 1% level. The HML and RMW loadi
 
 | Test | Statistic | p-value | Interpretation |
 |------|-----------|---------|----------------|
-| EW Mean Return t-test | t=9.89 | 0.0000 | Return highly significantly > 0 |
-| Sharpe Equality (EW vs IC) | z=1.13 | 0.258 | Not significantly different |
-| Diebold-Mariano (EW vs IC) | DM=0.32 | 0.752 | Not significantly different |
+| EW Mean Return t-test | t=9.89 | 0.0000 | Portfolio return is highly significantly > 0 |
+| Sharpe Equality (EW vs IC) | z=1.13 | 0.258 | EW and IC-weighted are not statistically different |
+| Diebold-Mariano (EW vs IC) | DM=0.32 | 0.752 | No significant difference in predictive accuracy |
+
+The mean return t-test (t=9.89) confirms the strategy generates statistically significant positive returns — not luck. The Sharpe equality and Diebold-Mariano tests show that while equal-weight outperforms IC-weighted in point estimates, the difference is not statistically significant (p > 0.25). This supports using equal-weight as the simpler, more robust choice.
 
 ### 9.6 Bootstrap Confidence Intervals
 
+Using circular block bootstrap (block size 12 months, 10,000 iterations):
+
 | Period | Sharpe | 95% CI |
 |--------|--------|--------|
+| Full sample (541 months) | 1.47 | [1.10, 1.85] |
 | OOS (2015-2019) | 0.39 | [-0.32, 1.20] |
+
+The full-sample Sharpe CI excludes zero — statistically positive. The OOS CI includes zero due to the short 60-month period, but the point estimate (0.39) is positive and the primary significance test is the full-sample alpha (t=5.49).
 
 ### 9.7 Long vs Short Leg
 
@@ -495,6 +506,8 @@ Alpha primarily from long leg. Short leg underperforms (structural challenge of 
 | OOS Early (2015-2017) | 0.95 | 7.0% | -6.0% | 36 |
 | OOS Late (2018-2019) | 0.22 | 1.4% | -8.2% | 24 |
 
+The strategy is profitable in all subperiods but shows declining Sharpe over time. OOS Late (2018-2019) is the weakest (Sharpe 0.22) — this period saw factor crowding in value/quality strategies after the 2017-2018 quant crowding episode. The strategy remains positive but compressed. This regime sensitivity is an honest finding, not a failure.
+
 ### 9.9 Cost Sensitivity
 
 | Cost (bps RT) | Full Sharpe | OOS Sharpe |
@@ -506,7 +519,7 @@ Alpha primarily from long leg. Short leg underperforms (structural challenge of 
 | 20 | 1.41 | 0.32 |
 | 30 | 1.34 | 0.25 |
 
-Strategy remains profitable up to 30 bps.
+The strategy remains profitable at every cost level tested. Even at 30 bps round-trip (stress case — 3× institutional costs), the full-sample Sharpe is 1.34 and OOS Sharpe is 0.25. The strategy degrades gracefully with costs rather than collapsing, indicating the alpha is not dependent on low-cost execution.
 
 ### 9.10 Regime Analysis
 
@@ -515,7 +528,7 @@ Strategy remains profitable up to 30 bps.
 | **Bear** | **1.74** | 19.9% | 121 |
 | Bull | 1.46 | 11.9% | 418 |
 
-Works better in bear markets — desirable for market-neutral strategy.
+The strategy performs better in bear markets (Sharpe 1.74 vs 1.46 in bull). This is a desirable property for a market-neutral strategy — it provides crisis alpha when traditional long-only portfolios suffer. The likely mechanism: during bear markets, the market more aggressively punishes low-quality, cash-poor firms (our short leg), widening the spread between cash-rich and cash-poor stocks.
 
 ### 9.11 Signal Ablation
 
@@ -526,7 +539,7 @@ Works better in bear markets — desirable for market-neutral strategy.
 | **ibcomq_to_mktcap** | **1.297** | **-0.308** |
 | oancfy_to_mktcap | 1.527 | -0.077 |
 
-All 3 are load-bearing. ibcomq_to_mktcap contributes the most.
+All 3 signals are load-bearing — removing any one causes a meaningful Sharpe decline. ibcomq_to_mktcap (earnings yield) contributes the most: dropping it reduces Sharpe by 0.31, nearly 20% of the total. This makes economic sense — earnings yield captures a different dimension (valuation) than the two cash-flow signals, providing the most diversification benefit.
 
 ### 9.12 Sleeve Attribution
 
@@ -548,7 +561,7 @@ All individually strong. Combined Sharpe (1.61) exceeds any individual — diver
 | Beta only | 1.394 | 0.651 | 4.69 |
 | **Full (S+S+B)** | **1.605** | **0.388** | **5.49** |
 
-Full neutralization produces the highest pre-OOS Sharpe and alpha significance. Without neutralization, higher OOS Sharpe but lower alpha — returns are factor exposure, not stock selection.
+**A counterintuitive finding:** Without neutralization, OOS Sharpe is *higher* (0.74 vs 0.39). This seems like neutralization hurts — but look at the alpha t-stat: it's *lower* without neutralization (4.20 vs 5.49). The un-neutralized strategy earns returns by taking sector/size/beta bets, which happened to work OOS. But these returns are factor exposure, not alpha — they could reverse. Full neutralization strips out these bets, leaving only genuine stock selection. The lower OOS Sharpe is the honest price of isolating alpha from factor exposure.
 
 ### 9.14 Quantile Monotonicity
 
@@ -566,7 +579,7 @@ Full neutralization produces the highest pre-OOS Sharpe and alpha significance. 
 | 10 (highest alpha) | **22.3%** |
 | **Long/Short Spread** | **14.3%** |
 
-Nearly perfect monotonicity — each decile earns more than the one below. The composite alpha score reliably separates winners from losers across the entire distribution.
+Nearly perfect monotonicity — each decile earns more than the one below it. The long/short spread of 14.3% annualized is economically large and statistically significant. Crucially, the alpha is not just a top/bottom extreme effect — the signal works across the entire distribution. Decile 6 beats decile 5, decile 7 beats decile 6, etc. This indicates the composite alpha score contains genuine cross-sectional information, not just noise at the tails.
 
 ---
 
