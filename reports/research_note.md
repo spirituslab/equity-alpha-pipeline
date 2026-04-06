@@ -241,7 +241,63 @@ Instead of computing all metrics for all candidates (expensive), we filter by th
   └─ Correlation deduplication (< 0.70)              57 → 27 non-redundant
 ```
 
-### 3.3 Top Discoveries
+### 3.3 How IC Evaluation Works — Worked Example
+
+The IC (Information Coefficient) measures whether a signal predicts stock returns. Here is a small example showing exactly what the GPU computes.
+
+**At one date (e.g., January 2000), for 3 candidate signals and 5 stocks:**
+
+```
+Raw signal values:
+                    AAPL   MSFT    GE    JPM   XOM
+Signal A (ROE):     0.25   0.18   0.04   0.31  0.12
+Signal B (CF Yld):  2.30   1.80   0.40   3.10  1.20
+Signal C (EPS Yld): 0.08   0.05   0.02   0.09  0.06
+
+Rank each signal's stocks (1 = highest value):
+                    AAPL   MSFT    GE    JPM   XOM
+Signal A ranks:       2      3      5      1     4
+Signal B ranks:       2      3      5      1     4
+Signal C ranks:       2      4      5      1     3
+
+Next month's actual stock returns:
+                    AAPL   MSFT    GE    JPM   XOM
+Feb 2000 return:   +5.2%  +3.1%  -1.0%  +6.8%  +0.5%
+Return ranks:         2      3      5      1      4
+
+Correlate each signal's ranks with the return ranks:
+Signal A: [2,3,5,1,4] vs [2,3,5,1,4] → IC = 1.00  (perfect prediction!)
+Signal B: [2,3,5,1,4] vs [2,3,5,1,4] → IC = 1.00
+Signal C: [2,4,5,1,3] vs [2,3,5,1,4] → IC = 0.90  (close but not perfect)
+```
+
+If IC > 0, the signal correctly identified which stocks would outperform. If IC ≈ 0, no predictive power.
+
+**The GPU processes all 743 signals at once:** stack them into a matrix (743 × 1,685), rank all rows in one GPU operation, correlate with the return ranks in one batched dot product. This replaces 743 sequential CPU operations with a single GPU kernel.
+
+**Repeat for all 145 dates** to build an IC time series per signal:
+
+```
+IC matrix: (743 signals × 145 dates)
+
+Signal A: [+0.03, -0.01, +0.05, +0.02, +0.04, ...]   145 monthly values
+Signal B: [+0.08, +0.04, +0.06, +0.07, +0.05, ...]
+Signal C: [+0.01, -0.02, +0.00, +0.03, -0.01, ...]
+```
+
+**Then summarize each signal's IC time series:**
+
+```
+Signal A: Mean IC = 0.030, Std IC = 0.08, ICIR = 0.030/0.08 = 0.38  ← consistent, keep
+Signal B: Mean IC = 0.055, Std IC = 0.09, ICIR = 0.055/0.09 = 0.61  ← strong, keep
+Signal C: Mean IC = 0.005, Std IC = 0.07, ICIR = 0.005/0.07 = 0.07  ← noise, discard
+```
+
+**ICIR** (IC Information Ratio) = Mean IC / Std IC — the signal's "Sharpe ratio." It measures not how strong the prediction is on average, but how **consistent** it is. A signal with IC = 0.02 every month (high ICIR) is more valuable than one with IC = +0.10 some months and -0.08 others (low ICIR), because the portfolio rebalances monthly and needs reliable direction, not occasional lucky calls.
+
+We filter at **ICIR > 0.15**: of 743 candidates, 138 pass this threshold.
+
+### 3.4 Top Discoveries
 
 | Signal | Formula | Dev ICIR | Val ICIR | Hit Rate | Category |
 |--------|---------|----------|----------|----------|----------|
