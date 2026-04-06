@@ -405,23 +405,31 @@ The optimizer solves a QP at each monthly rebalance using a factor risk model co
 | Position limit | -2% ≤ w_i ≤ 2% per stock | No single-stock concentration |
 | Turnover penalty | κ × \|\|w_new - w_old\|\|₁ in objective | Reduce trading costs |
 
-### 9.2 Best Portfolio Performance (Equal-Weight Naive L/S)
+### 9.2 Detailed Performance
 
-| Metric | Value |
-|--------|-------|
-| Pre-OOS Sharpe | 1.605 |
-| OOS Sharpe | 0.388 |
-| Full Sharpe | 1.474 |
-| Sortino | 2.68 |
-| Calmar | 0.93 |
-| Max Drawdown | -14.6% |
-| Win Rate | 70% |
-| Skewness | +0.52 (positive) |
-| Kurtosis | 3.30 |
-| Avg Turnover | 1.02 |
-| Avg Holding Period | 2.0 months |
-| Avg Gross Exposure | 200% |
-| Avg Net Exposure | 0.0% (dollar-neutral) |
+We report detailed metrics for two portfolios: the **naive L/S** (clean diagnostic — no optimizer noise) and the **constrained optimizer** (production portfolio — enforces neutrality constraints).
+
+The naive L/S is the primary diagnostic because it isolates signal quality from optimizer behavior. The optimizer is the production version because real portfolios need risk constraints.
+
+| Metric | Naive L/S (EW) | Optimizer (EW) |
+|--------|---------------|----------------|
+| Pre-OOS Sharpe | 1.605 | **1.644** |
+| OOS Sharpe | 0.388 | **0.459** |
+| Full Sharpe | 1.474 | — |
+| Sortino | 2.68 | 2.63 |
+| Calmar | 0.93 | — |
+| Max Drawdown | -14.6% | -15.2% |
+| Win Rate | 70% | — |
+| Skewness | +0.52 (positive) | — |
+| Kurtosis | 3.30 | — |
+| Avg Turnover | 1.02 | 1.00 |
+| Avg Holding Period | 2.0 months | — |
+| Avg Gross Exposure | 200% | — |
+| Avg Net Exposure | 0.0% | 0.0% |
+| FF Alpha (ann) | 7.5% | **7.5%** |
+| Alpha t-stat | 5.49 | **5.64** |
+
+The optimizer improves OOS Sharpe from 0.39 to 0.46 (+18%) and alpha t-stat from 5.49 to 5.64, while maintaining the same 7.5% annualized alpha. The improvement comes from tighter risk control — the optimizer reduces unintended beta and sector exposures that the naive equal-weight portfolio inherits from the stock selection.
 
 ### 9.3 Risk Metrics
 
