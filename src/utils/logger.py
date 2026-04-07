@@ -56,6 +56,7 @@ class PipelineLogger:
         self._step_name = step_name
         self._step_start = time.time()
         self.logger.info(f">>> {step_name}")
+        self._flush()
 
     def step_complete(self, step_name: str, message: str):
         """Log step completion with key metric and elapsed time."""
@@ -63,6 +64,7 @@ class PipelineLogger:
         total = time.time() - self._start_time
         msg = f"  {step_name}: {message} [{_fmt_time(elapsed)}, total {_fmt_time(total)}]"
         self.logger.info(msg)
+        self._flush()
         self._notify(f"{step_name}: {message} ({_fmt_time(elapsed)})")
         self._step_start = None
 
@@ -71,7 +73,20 @@ class PipelineLogger:
         elapsed = time.time() - self._step_start if self._step_start else 0
         msg = f"  FAILED {step_name}: {error} [{_fmt_time(elapsed)}]"
         self.logger.error(msg)
+        self._flush()
         self._notify(f"FAILED {step_name}: {error}", urgency="critical")
+
+    def progress(self, message: str):
+        """Log a progress update with immediate flush."""
+        total = time.time() - self._start_time
+        self.logger.info(f"  [{_fmt_time(total)}] {message}")
+        self._flush()
+
+    def substep(self, parent: str, detail: str):
+        """Log a substep within a major step."""
+        elapsed = time.time() - self._step_start if self._step_start else 0
+        self.logger.info(f"  [{parent}] {detail} ({_fmt_time(elapsed)})")
+        self._flush()
 
     def stepwise_update(self, step: int, signal: str, sharpe: float, oos_sharpe: float):
         """Log a stepwise selection step."""
@@ -90,6 +105,12 @@ class PipelineLogger:
     def info(self, message: str):
         """Log an info message."""
         self.logger.info(f"  {message}")
+        self._flush()
+
+    def _flush(self):
+        """Flush all handlers immediately."""
+        for handler in self.logger.handlers:
+            handler.flush()
 
     def _notify(self, message: str, urgency: str = "normal"):
         """Send desktop notification via notify-send."""

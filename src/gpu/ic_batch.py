@@ -22,6 +22,7 @@ def batch_compute_ic(
     returns: pd.DataFrame,
     universe: pd.DataFrame,
     end_date: str = None,
+    start_date: str = None,
 ) -> dict[str, pd.Series]:
     """Compute rank IC for all signals with minimal Python loops.
 
@@ -30,7 +31,8 @@ def batch_compute_ic(
     """
     if not GPU_AVAILABLE or len(signals) < 5:
         from src.analytics.ic import compute_ic_series
-        return {name: compute_ic_series(sig, returns, universe, end_date=end_date)
+        return {name: compute_ic_series(sig, returns, universe, end_date=end_date,
+                                         start_date=start_date)
                 for name, sig in signals.items()}
 
     # ---- Align dates; use UNION of stocks (not intersection) to match CPU behavior ----
@@ -52,10 +54,12 @@ def batch_compute_ic(
 
     if end_date:
         common_dates = common_dates[common_dates <= pd.Period(end_date, "M")]
+    if start_date:
+        common_dates = common_dates[common_dates >= pd.Period(start_date, "M")]
 
     ret_dates = set(returns.index)
     valid_dates = [d for d in common_dates if (d + 1) in ret_dates]
-    dates = pd.PeriodIndex(valid_dates)
+    dates = pd.PeriodIndex(valid_dates, freq="M") if valid_dates else pd.PeriodIndex([], freq="M")
     stocks = common_stocks
 
     C = len(signal_names)

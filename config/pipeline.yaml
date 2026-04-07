@@ -19,19 +19,7 @@ universe:
   sp500_only: true
 
 signals:
-  active:
-    - momentum_12_2
-    - st_reversal
-    - roe
-    - asset_growth
-    - gross_profitability
-    - accrual_ratio
-    # Mined signals (discovered by signal mining machine)
-    - ibcomq_to_mktcap
-    - oancfy_div_rectq
-    - epsfxq_to_mktcap
-    - ibcomq_yoy
-    - cheq_yoy
+  active: []                  # All signals come from mining machine
   winsorize_pct: 0.01       # 1st/99th percentile
   neutralize_sector: true
   neutralize_size: true
@@ -58,6 +46,31 @@ optimization:
 costs:
   base_bps: 10              # 10 bps round-trip
   stress_bps: 30            # 30 bps round-trip
+
+validation:
+  mode: "nested"              # "single_split" for legacy, "nested" for desk-grade
+  inner_start: "1975-01"
+  inner_end: "2009-12"
+  middle_start: "2010-01"
+  middle_end: "2014-12"
+  oos_start: "2015-01"
+  inner_folds:
+    - {train_end: "1989-12", val_end: "1994-12"}
+    - {train_end: "1994-12", val_end: "1999-12"}
+    - {train_end: "1999-12", val_end: "2004-12"}
+    - {train_end: "2004-12", val_end: "2009-12"}
+  purge_months: 2
+  embargo_months: 1
+  min_fold_survival: 2
+  stability_threshold: 0.5
+  # Multi-criteria stepwise penalties
+  lambda_turnover: 0.1
+  lambda_instability: 0.2
+  lambda_concentration: 0.1
+  min_improvement_mean: 0.0
+  min_improvement_median: 0.0
+  max_turnover_delta: 0.15
+  max_drawdown_delta: 0.10
 
 output:
   dir: "outputs"

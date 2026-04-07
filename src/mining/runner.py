@@ -1,4 +1,7 @@
-"""Mining orchestrator: enumerate → compute → evaluate → filter → dedup → codegen."""
+"""Mining orchestrator: enumerate → compute → evaluate → filter → dedup → codegen.
+
+Supports both single-split (legacy) and nested chronological validation modes.
+"""
 
 from pathlib import Path
 
@@ -16,7 +19,6 @@ from src.mining.filter import filter_dev_period, filter_val_period
 from src.signals.zscore import standardize_signal
 from src.mining.deduplicate import deduplicate
 from src.mining.codegen import generate_factor_file
-from src.signals.zscore import standardize_signal
 
 
 def run_mining(pipeline_config: PipelineConfig, mining_config: MiningConfig) -> None:
@@ -195,7 +197,10 @@ def run_mining(pipeline_config: PipelineConfig, mining_config: MiningConfig) -> 
 
 
 def _load_existing_signals(config: PipelineConfig) -> dict[str, pd.DataFrame]:
-    """Load existing cached raw signals."""
+    """Load existing cached raw signals.
+
+    Returns empty dict when signals.active is empty (all signals come from mining).
+    """
     existing = {}
     for name in config.signals.active:
         cache_file = config.cache_path(f"raw_{name}.parquet")
@@ -235,3 +240,246 @@ def _save_results_csv(
         })
     df = pd.DataFrame(rows).sort_values("dev_icir", key=abs, ascending=False)
     df.to_csv(path, index=False)
+
+
+def run_mining_nested(
+    pipeline_config: PipelineConfig,
+    mining_config: MiningConfig,
+    run_ctx,
+    returns: pd.DataFrame,
+    universe: pd.DataFrame,
+    sectors: pd.DataFrame,
+    log_mcap: pd.DataFrame,
+    beta: pd.DataFrame,
+    factor_returns: pd.DataFrame,
+    rf: pd.Series,
+    logger=None,
+) -> tuple[list[str], str, dict[str, pd.DataFrame]]:
+    """Nested validation mining pipeline.
+
+    Returns:
+        (signal_names, selected_method, precomputed_neutral)
+    """
+    from src.gpu.backend import GPU_AVAILABLE
+    from src.gpu.ic_batch import batch_compute_ic
+    from src.gpu.turnover_batch import batch_compute_turnover
+    from src.gpu.spread_batch import batch_compute_decile_spread
+    from src.gpu.neutralize_batch import ProjectionCache
+    from src.analytics.ic import ic_summary as _ic_summary
+    from src.mining.inner_folds import InnerFoldRunner, FoldResult
+    from src.mining.stability import StabilityTracker
+    from src.mining.stepwise import forward_stepwise_nested
+    from src.mining.model_comparison import ModelComparison
+
+    vc = pipeline_config.validation
+    panel = DataPanel(pipeline_config)
+
+    import time as _time
+    def _log(msg):
+        if logger:
+            logger.progress(msg)
+        else:
+            print(msg, flush=True)
+
+    def _logsub(parent, detail):
+        if logger:
+            logger.substep(parent, detail)
+        else:
+            print(f"  [{parent}] {detail}", flush=True)
+
+    _log("=" * 70)
+    _log("NESTED VALIDATION MINING PIPELINE")
+    _log(f"Inner: {vc.inner_start}→{vc.inner_end}, Middle: {vc.middle_start}→{vc.middle_end}, OOS: {vc.oos_start}→")
+    _log(f"Folds: {len(vc.inner_folds)}")
+
+    # ---- 1. Enumerate + compute (same as single-split) ----
+    t0 = _time.time()
+    _log("Step 1: Enumerating candidates...")
+    specs = enumerate_candidates(mining_config)
+    specs_by_name = {s.name: s for s in specs}
+    _log(f"Step 1: Generated {len(specs)} candidate specifications ({_time.time()-t0:.0f}s)")
+
+    t0 = _time.time()
+    _log("Step 2: Computing candidate signals...")
+    raw_signals = compute_all_candidates(panel, specs, show_progress=True)
+    _log(f"Step 2: Computed {len(raw_signals)} signals ({_time.time()-t0:.0f}s)")
+
+    # ---- 3. Standardize all signals ----
+    t0 = _time.time()
+    _log("Step 3: Standardizing signals...")
+    z_signals = {}
+    for name, raw in raw_signals.items():
+        z_signals[name] = standardize_signal(raw, winsorize_pct=0.01)
+    _log(f"Step 3: Standardized {len(z_signals)} signals ({_time.time()-t0:.0f}s)")
+
+    # ---- 4. Global precomputation (GPU) ----
+    # 4a. Build projection cache once
+    t0 = _time.time()
+    _log("Step 4a: Building projection matrix cache...")
+    proj_cache = ProjectionCache()
+    proj_cache.build(
+        sector_labels=sectors, log_mcap=log_mcap, beta=beta,
+        neutralize_sector=True, neutralize_size=True, neutralize_beta=True,
+    )
+    _log(f"Step 4a: Cached {len(proj_cache.projections)} projection matrices ({_time.time()-t0:.0f}s)")
+
+    # 4b. Loose IC filter on full inner period to reduce candidates
+    t0 = _time.time()
+    _log(f"Step 4b: GPU IC on full inner period ({vc.inner_start}→{vc.inner_end})...")
+    if GPU_AVAILABLE and len(z_signals) > 20:
+        global_ic = batch_compute_ic(z_signals, returns, universe, end_date=vc.inner_end)
+    else:
+        from src.analytics.ic import compute_ic_series
+        global_ic = {name: compute_ic_series(z_signals[name], returns, universe, end_date=vc.inner_end)
+                     for name in tqdm(z_signals, desc="IC eval")}
+
+    # Keep signals with |ICIR| > loose threshold (half of dev threshold)
+    loose_threshold = mining_config.min_icir_dev
+    ic_candidates = []
+    for name in raw_signals:
+        if name in global_ic and len(global_ic[name]) > 0:
+            stats = _ic_summary(global_ic[name])
+            icir = stats.get("ICIR", 0)
+            if abs(icir) >= loose_threshold:
+                ic_candidates.append(name)
+    _log(f"Step 4b: Loose IC filter: {len(ic_candidates)} / {len(raw_signals)} passed (|ICIR| >= {loose_threshold}) ({_time.time()-t0:.0f}s)")
+
+    # 4c. GPU batch turnover + spread for IC candidates
+    ic_z = {n: z_signals[n] for n in ic_candidates}
+    t0 = _time.time()
+    _log(f"Step 4c: GPU batch turnover + spread for {len(ic_candidates)} candidates...")
+    turnover_dict = batch_compute_turnover(ic_z, universe, end_date=vc.inner_end)
+    spread_dict = batch_compute_decile_spread(ic_z, returns, universe, end_date=vc.inner_end)
+
+    _log(f"Step 4c: Turnover + spread done ({_time.time()-t0:.0f}s)")
+
+    # 4d. Neutralize ALL IC candidates once
+    t0 = _time.time()
+    _log(f"Step 4d: Neutralizing {len(ic_candidates)} candidates...")
+    precomputed_neutral = {}
+    for i, name in enumerate(ic_candidates):
+        z = z_signals[name]
+        if proj_cache._built:
+            if GPU_AVAILABLE:
+                n = proj_cache.neutralize_fast_gpu(z)
+            else:
+                n = proj_cache.neutralize_fast(z)
+        else:
+            from src.signals.neutralize import neutralize_signal
+            n = neutralize_signal(z, sector_labels=sectors, log_mcap=log_mcap, beta=beta,
+                                  neutralize_sector=True, neutralize_size=True, neutralize_beta=True)
+        precomputed_neutral[name] = n
+        if (i + 1) % 10 == 0:
+            _logsub("Step 4d", f"[{i+1}/{len(ic_candidates)}] neutralized")
+    _log(f"Step 4d: All {len(precomputed_neutral)} signals neutralized ({_time.time()-t0:.0f}s)")
+
+    # ---- 5. Per-fold IC computation (GPU, sequential) ----
+    t0 = _time.time()
+    _log("Step 5: Per-fold GPU IC computation...")
+    fold_ic_dicts = {}
+    for i, fd in enumerate(vc.inner_folds):
+        t1 = _time.time()
+        _logsub("Step 5", f"Fold {i+1}: IC up to {fd.train_end}...")
+        if GPU_AVAILABLE and len(ic_z) > 20:
+            fold_ic = batch_compute_ic(ic_z, returns, universe, end_date=fd.train_end)
+        else:
+            from src.analytics.ic import compute_ic_series
+            fold_ic = {name: compute_ic_series(ic_z[name], returns, universe, end_date=fd.train_end)
+                       for name in ic_z}
+        fold_ic_dicts[i] = fold_ic
+        _logsub("Step 5", f"Fold {i+1} IC done ({_time.time()-t1:.0f}s)")
+    _log(f"Step 5: All fold ICs computed ({_time.time()-t0:.0f}s)")
+
+    # ---- 6. Run inner folds ----
+    t0 = _time.time()
+    _log(f"Step 6: Running {len(vc.inner_folds)} inner folds...")
+    fold_results = []
+    ic_raw = {n: raw_signals[n] for n in ic_candidates}
+
+    for i, fd in enumerate(vc.inner_folds):
+        runner = InnerFoldRunner(
+            fold_id=i + 1,
+            fold_def=fd,
+            raw_signals=ic_raw,
+            z_signals=ic_z,
+            ic_dict=fold_ic_dicts[i],
+            turnover_dict=turnover_dict,
+            spread_dict=spread_dict,
+            returns=returns,
+            universe=universe,
+            factor_returns=factor_returns,
+            rf=rf,
+            pipeline_config=pipeline_config,
+            mining_config=mining_config,
+            precomputed_neutral=precomputed_neutral,
+            validation_config=vc,
+        )
+        result = runner.run()
+        fold_results.append(result)
+        run_ctx.save_fold_result(i + 1, result)
+
+    _log(f"Step 6: All folds complete ({_time.time()-t0:.0f}s)")
+
+    # ---- 7. Cross-fold stability ----
+    _log("Step 7: Cross-fold stability analysis...")
+    tracker = StabilityTracker(fold_results, vc)
+    stability = tracker.compute()
+    run_ctx.save_stability_report(stability)
+
+    _log(f"Step 7: {len(stability.stable_candidates)} stable candidates found")
+    if stability.stable_candidates:
+        for sig in stability.stable_candidates[:10]:
+            score = stability.stability_scores.get(sig, 0)
+            _logsub("Stability", f"{sig:35s} score={score:.2f}")
+
+    if not stability.stable_candidates:
+        _log("WARNING: No stable candidates found. Lowering threshold...")
+        # Fallback: take signals surviving at least 1 fold
+        vc_relaxed = type(vc)(**{**vc.__dict__, 'min_fold_survival': 1, 'stability_threshold': 0.25})
+        tracker_relaxed = StabilityTracker(fold_results, vc_relaxed)
+        stability = tracker_relaxed.compute()
+        _log(f"Step 7: Relaxed → {len(stability.stable_candidates)} stable candidates")
+
+    # ---- 8. Nested stepwise on stable candidates ----
+    t0 = _time.time()
+    _log(f"Step 8: Nested forward stepwise on {len(stability.stable_candidates)} stable candidates...")
+    nested_history = forward_stepwise_nested(
+        stable_candidates=stability.stable_candidates,
+        precomputed_neutral=precomputed_neutral,
+        returns=returns,
+        universe=universe,
+        config=pipeline_config,
+        fold_defs=vc.inner_folds,
+        validation_config=vc,
+        max_signals=15,
+    )
+
+    if nested_history:
+        best = nested_history[-1]
+        selected_signals = best.signal_set
+    else:
+        selected_signals = stability.stable_candidates[:5]
+        _log(f"Step 8: Stepwise returned empty — using top {len(selected_signals)} stable candidates")
+
+    # ---- 9. Freeze and model comparison ----
+    run_ctx.save_freeze_manifest(selected_signals, pipeline_config, mining_config)
+
+    _log(f"Step 8: Nested stepwise complete ({_time.time()-t0:.0f}s)")
+    _log(f"Step 9: Model comparison on middle layer ({vc.middle_start}→{vc.middle_end})...")
+    comparison = ModelComparison(
+        frozen_signals=selected_signals,
+        precomputed_neutral=precomputed_neutral,
+        returns=returns,
+        universe=universe,
+        factor_returns=factor_returns,
+        rf=rf,
+        config=pipeline_config,
+    )
+    comparison_result = comparison.run()
+    run_ctx.save_model_comparison(comparison_result)
+
+    selected_method = comparison_result.selected_method
+    _log(f"Step 9: Selected method={selected_method}, Sharpes={comparison_result.method_sharpes}")
+    _log(f"Mining complete: {len(selected_signals)} signals, method={selected_method}")
+
+    return selected_signals, selected_method, precomputed_neutral

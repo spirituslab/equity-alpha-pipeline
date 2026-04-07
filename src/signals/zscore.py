@@ -14,15 +14,14 @@ def winsorize_cross_section(
     Clips extreme values to reduce impact of data errors, split artifacts,
     and filing anomalies on downstream neutralization and combination.
     """
-    result = signal.copy()
-    for t in result.index:
-        row = result.loc[t].dropna()
-        if len(row) < 10:
-            continue
-        lo = np.nanpercentile(row, lower_pct * 100)
-        hi = np.nanpercentile(row, upper_pct * 100)
-        result.loc[t] = result.loc[t].clip(lower=lo, upper=hi)
-    return result
+    # Vectorized: compute percentiles across columns for each row
+    vals = signal.values  # (T, N)
+    lo = np.nanpercentile(vals, lower_pct * 100, axis=1, keepdims=True)
+    hi = np.nanpercentile(vals, upper_pct * 100, axis=1, keepdims=True)
+    clipped = np.clip(vals, lo, hi)
+    # Preserve NaN
+    clipped = np.where(np.isnan(vals), np.nan, clipped)
+    return pd.DataFrame(clipped, index=signal.index, columns=signal.columns)
 
 
 def zscore_cross_section(signal: pd.DataFrame) -> pd.DataFrame:

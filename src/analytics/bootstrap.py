@@ -59,6 +59,7 @@ def block_bootstrap_sharpe(
         "ci_lower": ci_lower,
         "ci_upper": ci_upper,
         "se": boot_sharpes.std(),
+        "p_value_zero": float((boot_sharpes <= 0).mean()),
         "n_bootstrap": n_bootstrap,
         "block_size": block_size,
     }

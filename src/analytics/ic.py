@@ -9,6 +9,9 @@ def compute_ic_series(
     returns: pd.DataFrame,
     universe: pd.DataFrame,
     end_date: str = None,
+    start_date: str = None,
+    purge_start: str = None,
+    purge_end: str = None,
 ) -> pd.Series:
     """Compute monthly rank IC (Spearman) for a signal.
 
@@ -20,12 +23,21 @@ def compute_ic_series(
         returns: (date x gvkey) stock returns (decimal)
         universe: (date x gvkey) boolean mask for investable universe
         end_date: if provided, only use dates up to this period
+        start_date: if provided, only use dates from this period onward
+        purge_start: exclude dates in [purge_start, purge_end] (fold boundary purge)
+        purge_end: exclude dates in [purge_start, purge_end]
     """
     ic_values = {}
 
     dates = signal.index
     if end_date is not None:
         dates = dates[dates <= pd.Period(end_date, "M")]
+    if start_date is not None:
+        dates = dates[dates >= pd.Period(start_date, "M")]
+    if purge_start is not None and purge_end is not None:
+        purge_s = pd.Period(purge_start, "M")
+        purge_e = pd.Period(purge_end, "M")
+        dates = dates[(dates < purge_s) | (dates > purge_e)]
 
     for t in dates:
         t_plus_1 = t + 1

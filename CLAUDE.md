@@ -3,6 +3,16 @@
 ## What This Project Is
 Factor-neutral long/short U.S. equity alpha research pipeline with systematic signal mining.
 
+## Validation Mode
+The pipeline supports two modes via `config/pipeline.yaml → validation.mode`:
+- **`nested`** (default, desk-grade): Three-layer nested chronological validation
+  - Inner layer (1975–2009): 4 expanding folds, each runs preselect → dedup → stepwise
+  - Middle layer (2010–2014): Model comparison (EW vs IC-weighted vs inverse-vol)
+  - Outer layer (2015–2019): Final OOS evaluation, touched once
+  - Cross-fold stability tracking, multi-criteria penalized stepwise, DSR/PBO
+  - Stage 7 runs on OOS ONLY
+- **`single_split`** (legacy): Fixed dev/val/OOS split, runs Stage 7 on full period
+
 ## Complete Workflow
 
 The system has TWO phases. Phase 1 decides WHICH signals. Phase 2 decides HOW TO TRADE them.
@@ -119,14 +129,20 @@ src/
     evaluate.py                # IC evaluation (GPU batch + CPU turnover/spread)
     filter.py                  # Quality threshold filtering
     deduplicate.py             # Correlation-based dedup
-    stepwise.py                # Forward stepwise portfolio selection
+    stepwise.py                # Forward stepwise + nested multi-fold stepwise
     codegen.py                 # Generate Factor .py files for survivors
-    runner.py                  # Mining orchestrator
+    runner.py                  # Mining orchestrator (single_split + nested)
     config.py                  # Mining thresholds and field classifications
+    inner_folds.py             # Inner fold engine for nested validation
+    stability.py               # Cross-fold stability tracker
+    model_comparison.py        # Middle-layer method comparison
+    persistence.py             # Intermediate output persistence (RunContext)
   gpu/                         # GPU acceleration
     backend.py                 # CuPy/numpy abstraction (fallback if no GPU)
     ic_batch.py                # Batched IC computation on GPU
     neutralize_batch.py        # Projection matrix cache for fast neutralization
+    turnover_batch.py          # GPU-batched signal turnover
+    spread_batch.py            # GPU-batched decile spread
   ml/                          # ML extension (Ridge, ElasticNet, XGBoost)
     purged_cv.py               # Purged k-fold CV with embargo
     models.py                  # AlphaModel wrappers + ml_combine()
@@ -141,8 +157,9 @@ src/
     performance.py             # Sharpe, Sortino, Calmar, max DD
     risk.py                    # VaR, CVaR, Cornish-Fisher
     attribution.py             # FF factor attribution (Newey-West HAC)
-    bootstrap.py               # Block bootstrap for CIs
+    bootstrap.py               # Block bootstrap for CIs + p_value_zero
     statistical_tests.py       # DM test, JK Sharpe equality
+    bias_aware.py              # Deflated Sharpe Ratio, PBO
   utils/
     logger.py                  # PipelineLogger (file logging + desktop notifications)
 ```

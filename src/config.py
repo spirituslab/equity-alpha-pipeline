@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-
 import yaml
 
 
@@ -11,6 +10,40 @@ class DateConfig:
     burn_in_end: str = "1974-12"
     dev_end: str = "2004-12"
     val_end: str = "2014-12"
+
+
+@dataclass
+class InnerFoldDef:
+    train_end: str
+    val_end: str
+
+
+@dataclass
+class NestedValidationConfig:
+    mode: str = "nested"  # "single_split" | "nested"
+    inner_start: str = "1975-01"
+    inner_end: str = "2009-12"
+    middle_start: str = "2010-01"
+    middle_end: str = "2014-12"
+    oos_start: str = "2015-01"
+    inner_folds: list[InnerFoldDef] = field(default_factory=lambda: [
+        InnerFoldDef("1989-12", "1994-12"),
+        InnerFoldDef("1994-12", "1999-12"),
+        InnerFoldDef("1999-12", "2004-12"),
+        InnerFoldDef("2004-12", "2009-12"),
+    ])
+    purge_months: int = 2
+    embargo_months: int = 1
+    min_fold_survival: int = 2
+    stability_threshold: float = 0.5
+    # Multi-criteria stepwise penalties
+    lambda_turnover: float = 0.1
+    lambda_instability: float = 0.2
+    lambda_concentration: float = 0.1
+    min_improvement_mean: float = 0.0
+    min_improvement_median: float = 0.0
+    max_turnover_delta: float = 0.15
+    max_drawdown_delta: float = 0.10
 
 
 @dataclass
@@ -31,10 +64,7 @@ class UniverseConfig:
 
 @dataclass
 class SignalConfig:
-    active: list[str] = field(default_factory=lambda: [
-        "momentum_12_2", "st_reversal", "roe",
-        "asset_growth", "gross_profitability", "accrual_ratio",
-    ])
+    active: list[str] = field(default_factory=list)
     winsorize_pct: float = 0.01
     neutralize_sector: bool = True
     neutralize_size: bool = True
@@ -78,6 +108,7 @@ class PipelineConfig:
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     optimization: OptConfig = field(default_factory=OptConfig)
     costs: CostConfig = field(default_factory=CostConfig)
+    validation: NestedValidationConfig = field(default_factory=NestedValidationConfig)
     output_dir: str = "outputs"
 
     _project_root: Path = field(default=None, repr=False)
@@ -106,6 +137,13 @@ class PipelineConfig:
 
         project_root = path.parent.parent  # config/ -> project root
 
+        # Parse nested validation config
+        val_raw = raw.get("validation", {})
+        val_folds_raw = val_raw.pop("inner_folds", None)
+        validation = NestedValidationConfig(**val_raw) if val_raw else NestedValidationConfig()
+        if val_folds_raw:
+            validation.inner_folds = [InnerFoldDef(**f) for f in val_folds_raw]
+
         return cls(
             dates=DateConfig(**raw.get("dates", {})),
             data=DataConfig(**raw.get("data", {})),
@@ -114,6 +152,7 @@ class PipelineConfig:
             backtest=BacktestConfig(**raw.get("backtest", {})),
             optimization=OptConfig(**raw.get("optimization", {})),
             costs=CostConfig(**raw.get("costs", {})),
+            validation=validation,
             output_dir=raw.get("output", {}).get("dir", "outputs"),
             _project_root=project_root,
         )
